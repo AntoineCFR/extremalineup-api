@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import pandas
 from bigquery import get_bigquery_timetable, get_user_favorites, toggle_favorite
 from config import Config
 

@@ -1,6 +1,7 @@
 import logging
 from google.cloud import bigquery
 from google.oauth2 import service_account
+import pandas
 from config import Config
 
 def get_google_credentials(credentials_path=None):
