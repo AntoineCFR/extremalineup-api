@@ -3,7 +3,7 @@ from flask_cors import CORS
 import pandas
 from bigquery import (
     get_bigquery_timetable,
-    get_user_favorite_set_ids,
+    get_user_favorites,
     update_user_favorites,
     get_user_id
 )
@@ -27,26 +27,28 @@ def get_favorites():
         return jsonify({"error": "user_id is required"}), 400
 
     try:
-        # Convertit user_id en INT64
         user_id_int = int(user_id)
-        favorite_set_ids = get_user_favorite_set_ids(user_id_int)
-        return jsonify({"favorites": [{"set_id": sid} for sid in favorite_set_ids]})
+        favorite_set_ids = get_user_favorites(user_id_int)
+        # Convertis chaque set_id en int natif
+        return jsonify({"favorites": [{"set_id": int(sid)} for sid in favorite_set_ids]})  # <-- Conversion ici
     except ValueError:
         return jsonify({"error": "user_id must be an integer"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/favorites', methods=['GET'])
-def get_favorites():
-    user_id = request.args.get('user_id')
+@app.route('/favorites', methods=['POST'])
+def save_favorites():
+    data = request.get_json()
+    user_id = data.get('user_id')  # Récupère user_id (INT64)
+    favorites_list = data.get('favorites', [])  # Liste des set_id (ex: [28, 45, 67])
+
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
 
     try:
-        user_id_int = int(user_id)
-        favorite_set_ids = get_user_favorite_set_ids(user_id_int)
-        # Convertis chaque set_id en int natif
-        return jsonify({"favorites": [{"set_id": int(sid)} for sid in favorite_set_ids]})  # <-- Conversion ici
+        # Convertit user_id en INT64 pour BigQuery
+        update_user_favorites(int(user_id), favorites_list)
+        return jsonify({"status": "success"})
     except ValueError:
         return jsonify({"error": "user_id must be an integer"}), 400
     except Exception as e:

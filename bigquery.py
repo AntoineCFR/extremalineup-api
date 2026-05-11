@@ -21,7 +21,7 @@ def get_bigquery_timetable():
         logging.error(f"Erreur lors de la récupération de la timetable: {e}")
         raise
 
-def get_user_favorite_set_ids(user_id):
+def get_user_favorites(user_id):
     """Récupère UNIQUEMENT les set_id favoris d'un utilisateur via son user_id (INT64)."""
     try:
         query = f"""
