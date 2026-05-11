@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas
-from bigquery import get_bigquery_timetable, get_user_favorites, update_user_favorites
+from bigquery import get_bigquery_timetable, get_user_favorites, update_user_favorites, user_exists
 from config import Config
 
 app = Flask(__name__)
@@ -39,6 +39,18 @@ def save_favorites():
     try:
         update_user_favorites(user_id, favorites_list)
         return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/users/check', methods=['GET'])
+def check_user():
+    username = request.args.get('username')
+    if not username:
+        return jsonify({"error": "username is required"}), 400
+
+    try:
+        exists = user_exists(username)
+        return jsonify({"exists": exists})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

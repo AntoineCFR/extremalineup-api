@@ -59,3 +59,17 @@ def update_user_favorites(user_id, favorites_list):
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour des favoris: {e}")
         raise
+
+def user_exists(user_id):
+    """Vérifie si un utilisateur existe dans la table users."""
+    try:
+        query = f"""
+        SELECT COUNT(*) as count
+        FROM `{Config.BQ_DATASET}.users`
+        WHERE username = '{user_id}'
+        """
+        df = client.query(query).result().to_dataframe()
+        return df.iloc[0]['count'] > 0
+    except Exception as e:
+        logging.error(f"Erreur lors de la vérification de l'utilisateur: {e}")
+        raise
