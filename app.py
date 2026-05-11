@@ -1,7 +1,12 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas
-from bigquery import get_bigquery_timetable, get_user_favorites, update_user_favorites, user_exists
+from bigquery import (
+    get_bigquery_timetable,
+    get_user_favorite_set_ids,
+    update_user_favorites,
+    get_user_id
+)
 from config import Config
 
 app = Flask(__name__)
@@ -22,8 +27,12 @@ def get_favorites():
         return jsonify({"error": "user_id is required"}), 400
 
     try:
-        favorite_set_ids = get_user_favorites(user_id)
+        # Convertit user_id en INT64
+        user_id_int = int(user_id)
+        favorite_set_ids = get_user_favorite_set_ids(user_id_int)
         return jsonify({"favorites": [{"set_id": sid} for sid in favorite_set_ids]})
+    except ValueError:
+        return jsonify({"error": "user_id must be an integer"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -37,8 +46,12 @@ def save_favorites():
         return jsonify({"error": "user_id is required"}), 400
 
     try:
-        update_user_favorites(user_id, favorites_list)
+        # Convertit user_id en INT64
+        user_id_int = int(user_id)
+        update_user_favorites(user_id_int, favorites_list)
         return jsonify({"status": "success"})
+    except ValueError:
+        return jsonify({"error": "user_id must be an integer"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -49,8 +62,10 @@ def check_user():
         return jsonify({"error": "username is required"}), 400
 
     try:
-        exists = user_exists(username)
-        return jsonify({"exists": exists})
+        user_id = get_user_id(username)  # Récupère l'ID de l'utilisateur
+        if user_id is None:
+            return jsonify({"exists": False})
+        return jsonify({"exists": True, "user_id": user_id})  # Retourne l'ID si l'utilisateur existe
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
