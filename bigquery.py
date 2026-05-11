@@ -22,55 +22,40 @@ def get_bigquery_timetable():
         raise
 
 def get_user_favorites(user_id):
-    """Récupère les favoris d'un utilisateur avec les détails du set."""
+    """Récupère UNIQUEMENT les set_id favoris d'un utilisateur (pour le frontend)."""
     try:
         query = f"""
-        SELECT t.*
-        FROM `{Config.BQ_USER_FAVORITES}` f
-        JOIN `{Config.BQ_TIMETABLE}` t ON f.set_id = t.set_id
-        WHERE f.user_id = '{user_id}'
-        ORDER BY t.start_time
+        SELECT set_id
+        FROM `{Config.BQ_USER_FAVORITES}`
+        WHERE user_id = '{user_id}'
         """
-        return client.query(query).result().to_dataframe()
+        df = client.query(query).result().to_dataframe()
+        return df['set_id'].tolist()  # Retourne une liste de set_id (ex: [28, 45, 67])
     except Exception as e:
-        logging.error(f"Erreur lors de la récupération des favoris: {e}")
+        logging.error(f"Erreur lors de la récupération des set_id favoris: {e}")
         raise
 
-def toggle_favorite(user_id, set_id):
-    """Ajoute ou retire un favori pour un utilisateur."""
+def update_user_favorites(user_id, favorites_list):
+    """Met à jour TOUS les favoris d'un utilisateur (remplace la liste existante)."""
     try:
-        # Vérifie que le set_id existe dans timetable
-        set_exists = client.query(f"""
-            SELECT COUNT(*) AS count
-            FROM `{Config.BQ_TIMETABLE}`
-            WHERE set_id = {set_id}
-        """).result().to_dataframe().iloc[0]['count'] > 0
-
-        if not set_exists:
-            raise ValueError(f"set_id {set_id} introuvable dans timetable")
-
-        # Vérifie si le favori existe déjà
-        query = f"""
-        SELECT COUNT(*) AS count
-        FROM `{Config.BQ_USER_FAVORITES}`
-        WHERE user_id = '{user_id}' AND set_id = {set_id}
+        # 1. Supprime les anciens favoris de l'utilisateur
+        delete_query = f"""
+        DELETE FROM `{Config.BQ_USER_FAVORITES}`
+        WHERE user_id = '{user_id}'
         """
-        count = client.query(query).result().to_dataframe().iloc[0]['count']
+        client.query(delete_query).result()
 
-        if count > 0:
-            # Retire le favori
-            query = f"""
-            DELETE FROM `{Config.BQ_USER_FAVORITES}`
-            WHERE user_id = '{user_id}' AND set_id = {set_id}
-            """
-        else:
-            # Ajoute le favori
-            query = f"""
+        # 2. Ajoute les nouveaux favoris (si la liste n'est pas vide)
+        if favorites_list:
+            # Utilise une requête paramétrée pour éviter les injections SQL
+            # et insère tous les favoris en une seule requête
+            values = ", ".join([f"('{user_id}', {set_id})" for set_id in favorites_list])
+            insert_query = f"""
             INSERT INTO `{Config.BQ_USER_FAVORITES}`
             (user_id, set_id)
-            VALUES ('{user_id}', {set_id})
+            VALUES {values}
             """
-        client.query(query).result()
+            client.query(insert_query).result()
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour des favoris: {e}")
         raise

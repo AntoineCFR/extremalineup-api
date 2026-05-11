@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas
-from bigquery import get_bigquery_timetable, get_user_favorites, toggle_favorite
+from bigquery import get_bigquery_timetable, get_user_favorites, update_user_favorites
 from config import Config
 
 app = Flask(__name__)
@@ -15,24 +15,30 @@ def get_timetable():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/favorites/<user_id>', methods=['GET'])
-def get_favorites(user_id):
+@app.route('/favorites', methods=['GET'])
+def get_favorites():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
     try:
-        df = get_user_favorites(user_id)
-        return jsonify(df.to_dict(orient='records'))
+        favorite_set_ids = get_user_favorites(user_id)
+        return jsonify({"favorites": [{"set_id": sid} for sid in favorite_set_ids]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/favorites', methods=['POST'])
-def update_favorite():
+def save_favorites():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    favorites_list = data.get('favorites', [])
+
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
     try:
-        data = request.json
-        user_id = data['user_id']
-        set_id = data['set_id']
-        toggle_favorite(user_id, set_id)
+        update_user_favorites(user_id, favorites_list)
         return jsonify({"status": "success"})
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
