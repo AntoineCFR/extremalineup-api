@@ -36,20 +36,17 @@ def get_favorites():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/favorites', methods=['POST'])
-def save_favorites():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    favorites_list = data.get('favorites', [])
-
+@app.route('/favorites', methods=['GET'])
+def get_favorites():
+    user_id = request.args.get('user_id')
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
 
     try:
-        # Convertit user_id en INT64
         user_id_int = int(user_id)
-        update_user_favorites(user_id_int, favorites_list)
-        return jsonify({"status": "success"})
+        favorite_set_ids = get_user_favorite_set_ids(user_id_int)
+        # Convertis chaque set_id en int natif
+        return jsonify({"favorites": [{"set_id": int(sid)} for sid in favorite_set_ids]})  # <-- Conversion ici
     except ValueError:
         return jsonify({"error": "user_id must be an integer"}), 400
     except Exception as e:
@@ -62,10 +59,11 @@ def check_user():
         return jsonify({"error": "username is required"}), 400
 
     try:
-        user_id = get_user_id(username)  # Récupère l'ID de l'utilisateur
+        user_id = get_user_id(username)
         if user_id is None:
             return jsonify({"exists": False})
-        return jsonify({"exists": True, "user_id": user_id})  # Retourne l'ID si l'utilisateur existe
+        # Convertis user_id en int natif (pas numpy.int64)
+        return jsonify({"exists": True, "user_id": int(user_id)})  # <-- Conversion ici
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
