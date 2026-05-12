@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import pandas
+import pandas as pd
 from bigquery import (
     get_bigquery_timetable,
     get_user_favorites,
@@ -16,6 +16,8 @@ CORS(app)
 def get_timetable():
     try:
         df = get_bigquery_timetable()
+        df['start_time']+= pd.Timedelta(hours=2)
+        df['end_time']+= pd.Timedelta(hours=2)
         return jsonify(df.to_dict(orient='records'))
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -59,45 +59,6 @@ def update_user_favorites(user_id, favorites_list):
         logging.error(f"Erreur lors de la mise à jour des favoris: {e}")
         raise
 
-def toggle_favorite(user_id, set_id):
-    """Ajoute ou retire un favori pour un utilisateur via son user_id (INT64)."""
-    try:
-        # Vérifie que le set_id existe dans timetable
-        set_exists = client.query(f"""
-            SELECT COUNT(*) AS count
-            FROM `{Config.BQ_TIMETABLE}`
-            WHERE set_id = {set_id}
-        """).result().to_dataframe().iloc[0]['count'] > 0
-
-        if not set_exists:
-            raise ValueError(f"set_id {set_id} introuvable dans timetable")
-
-        # Vérifie si le favori existe déjà
-        query = f"""
-        SELECT COUNT(*) AS count
-        FROM `{Config.BQ_USER_FAVORITES}`
-        WHERE user_id = {user_id} AND set_id = {set_id}
-        """
-        count = client.query(query).result().to_dataframe().iloc[0]['count']
-
-        if count > 0:
-            # Retire le favori
-            query = f"""
-            DELETE FROM `{Config.BQ_USER_FAVORITES}`
-            WHERE user_id = {user_id} AND set_id = {set_id}
-            """
-        else:
-            # Ajoute le favori
-            query = f"""
-            INSERT INTO `{Config.BQ_USER_FAVORITES}`
-            (user_id, set_id)
-            VALUES ({user_id}, {set_id})
-            """
-        client.query(query).result()
-    except Exception as e:
-        logging.error(f"Erreur lors de la mise à jour des favoris: {e}")
-        raise
-
 def get_user_id(username):
     """Récupère l'ID d'un utilisateur depuis son username (STRING). Retourne None si introuvable."""
     try:
