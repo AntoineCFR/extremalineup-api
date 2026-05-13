@@ -8,7 +8,7 @@ class Config:
         GOOGLE_APPLICATION_CREDENTIALS = f.name
     
     # Clé API WeatherAPI
-    WEATHER_API_KEY = "ta_clé_weatherapi"
+    WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
     # Emplacement du festival
     CITY = 'Houthalen-Helchteren'
