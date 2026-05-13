@@ -86,20 +86,19 @@ def check_user():
 @app.route('/update-weather', methods=['POST'])
 def update_weather():
     """
-    Met à jour les prévisions météo pour les 3 jours du festival (22, 23, 24 mai 2026).
-    Appelé par un cron job externe (ex: Cron-job.org).
+    Met à jour les prévisions météo pour les 3 jours du festival (22-24 mai 2026).
+    Utilise uniquement forecast.json de WeatherAPI.
     """
     try:
-        # Date de départ : 22 mai 2026 à 00:00:00
-        start_date = datetime(2026, 5, 22)
-        start_timestamp = int(start_date.timestamp())
+        # Vérifie si on est après le festival (24 mai 2026)
+        if datetime.now().date() > datetime(2026, 5, 24).date():
+            return jsonify({"status": "success", "message": "Festival terminé. Aucune mise à jour nécessaire."}), 200
 
-        # Appel à WeatherAPI pour les 3 jours du festival
+        # Appel à WeatherAPI pour les 14 prochains jours
         params = {
             'key': Config.WEATHER_API_KEY.strip(),
             'q': 'Houthalen-Helchteren',
-            'dt': start_timestamp,  # Commence le 22 mai 2026
-            'days': 3,              # 3 jours : 22, 23, 24 mai
+            'days': 14,  # 14 jours de prévisions (max pour WeatherAPI)
             'lang': 'fr'
         }
 
@@ -111,33 +110,29 @@ def update_weather():
         # Log des dates reçues pour débogage
         received_dates = [forecast["date"] for forecast in weather_data["forecast"]["forecastday"]]
         logger.info(f"Dates reçues de WeatherAPI: {received_dates}")
-        logger.info(f"Jours du festival configurés: {list(Config.FESTIVAL_DAYS.keys())}")
 
-        # Prépare les données pour BigQuery
+        # Filtre les données pour ne garder que les jours du festival (22-24 mai)
         weather_forecasts = []
         for forecast in weather_data["forecast"]["forecastday"]:
             date_str = forecast["date"]
-            if date_str not in Config.FESTIVAL_DAYS:
-                logger.warning(f"Date ignorée (non dans FESTIVAL_DAYS): {date_str}")
-                continue
-
-            day_data = forecast["day"]
-            weather_forecasts.append({
-                "date": date_str,
-                "day_name": datetime.strptime(date_str, "%Y-%m-%d").strftime("%A"),
-                "temperature": day_data["avgtemp_c"],
-                "description": day_data["condition"]["text"],
-                "icon": f"https:{day_data['condition']['icon']}",
-                "humidity": day_data["avghumidity"],
-                "wind_speed": day_data["maxwind_kph"] / 3.6,  # Conversion km/h → m/s
-                "festival_day": Config.FESTIVAL_DAYS[date_str],
-            })
+            if date_str in Config.FESTIVAL_DAYS:
+                day_data = forecast["day"]
+                weather_forecasts.append({
+                    "date": date_str,
+                    "day_name": datetime.strptime(date_str, "%Y-%m-%d").strftime("%A"),
+                    "temperature": day_data["avgtemp_c"],
+                    "description": day_data["condition"]["text"],
+                    "icon": f"https:{day_data['condition']['icon']}",
+                    "humidity": day_data["avghumidity"],
+                    "wind_speed": day_data["maxwind_kph"] / 3.6,  # Conversion km/h → m/s
+                    "festival_day": Config.FESTIVAL_DAYS[date_str],
+                })
 
         if not weather_forecasts:
             logger.error("Aucune date ne correspond aux jours du festival.")
             return jsonify({"status": "error", "message": "Aucune date ne correspond aux jours du festival."}), 500
 
-        # Stocke dans BigQuery
+        # Stocke dans BigQuery (écrase les anciennes données pour ces jours)
         store_weather_forecast(weather_forecasts)
         logger.info(f"Météo stockée pour {len(weather_forecasts)} jours.")
         return jsonify({"status": "success", "message": f"Météo stockée pour {len(weather_forecasts)} jours."}), 200
@@ -148,7 +143,7 @@ def update_weather():
     except Exception as e:
         logger.error(f"Erreur dans /update-weather: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
+    
 @app.route('/weather', methods=['GET'])
 def get_weather():
     """
