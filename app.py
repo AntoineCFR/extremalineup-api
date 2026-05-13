@@ -83,10 +83,15 @@ def update_weather():
     try:
         # Récupère les données depuis WeatherAPI
         weather_api_key = Config.WEATHER_API_KEY
-        location = "Houthalen-Helchteren"
-        url = f"http://api.weatherapi.com/v1/forecast.json?key={weather_api_key}&q={location}&days=3&lang=fr"
+        url = 'http://api.weatherapi.com/v1/forecast.json'
+        params = {
+            'key': weather_api_key,
+            'q': 'Houthalen-Helchteren',
+            'days': 3,
+            'lang': 'fr'
+        }
+        response = requests.get(url, params=params)
 
-        response = requests.get(url)
         response.raise_for_status()
         weather_data = response.json()
 
