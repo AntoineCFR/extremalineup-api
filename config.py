@@ -7,6 +7,23 @@ class Config:
         f.write(credentials_json)
         GOOGLE_APPLICATION_CREDENTIALS = f.name
     
+    # Clé API WeatherAPI
+    WEATHER_API_KEY = "ta_clé_weatherapi"
+
+    # Emplacement du festival
+    CITY = 'Houthalen-Helchteren'
+
+    # Configuration BigQuery pour la météo
+    BQ_WEATHER_TABLE = "weather"  # Nom de la table BigQuery
+
+    # Dictionnaire pour mapper les dates aux jours du festival
+    FESTIVAL_DAYS = {
+        "2026-05-22": "friday",
+        "2026-05-23": "saturday",
+        "2026-05-24": "sunday",
+    }
+
+
     # BigQuery
     BQ_PROJECT = "extremalineup"
     BQ_DATASET = "dataset"

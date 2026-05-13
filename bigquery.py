@@ -86,3 +86,75 @@ def user_exists(username):
     except Exception as e:
         logging.error(f"Erreur lors de la vérification de l'utilisateur: {e}")
         raise
+
+def store_weather_forecast(weather_data):
+    """
+    Stocke les prévisions météo pour les 3 jours du festival dans BigQuery.
+    Args:
+        weather_data (list): Liste de dictionnaires avec les données météo pour chaque jour.
+                             Format attendu: [
+                                 {
+                                     "date": "2026-05-15",
+                                     "day_name": "Vendredi",
+                                     "temperature": 18.5,
+                                     "description": "Partiellement nuageux",
+                                     "icon": "https://.../116.png",
+                                     "humidity": 65,
+                                     "wind_speed": 4.2,
+                                     "festival_day": "friday"
+                                 },
+                                 ...
+                             ]
+    """
+    try:
+        if not weather_data:
+            logging.warning("Aucune donnée météo fournie.")
+            return
+
+        # Supprime les anciennes données pour éviter les doublons
+        delete_query = f"""
+        DELETE FROM `{Config.BQ_DATASET}.{Config.BQ_WEATHER_TABLE}`
+        WHERE festival_day IN ('friday', 'saturday', 'sunday')
+        """
+        client.query(delete_query).result()
+
+        # Insère les nouvelles données
+        table_ref = client.dataset(Config.BQ_DATASET).table(Config.BQ_WEATHER_TABLE)
+        errors = client.insert_rows_json(table_ref, weather_data)
+        if errors:
+            logging.error(f"Erreurs lors de l'insertion dans BigQuery: {errors}")
+            raise Exception(f"Erreurs BigQuery: {errors}")
+
+    except Exception as e:
+        logging.error(f"Erreur lors du stockage de la météo: {e}")
+        raise
+
+def get_weather_forecast():
+    """
+    Récupère les prévisions météo pour les 3 jours du festival depuis BigQuery.
+    Returns:
+        list: Liste de dictionnaires avec les données météo pour chaque jour.
+    """
+    try:
+        query = f"""
+        SELECT
+            date,
+            day_name,
+            temperature,
+            description,
+            icon,
+            humidity,
+            wind_speed,
+            festival_day
+        FROM
+            `{Config.BQ_DATASET}.{Config.BQ_WEATHER_TABLE}`
+        WHERE
+            festival_day IN ('friday', 'saturday', 'sunday')
+        ORDER BY
+            date
+        """
+        df = client.query(query).result().to_dataframe()
+        return df.to_dict('records')  # Retourne une liste de dicts
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération de la météo: {e}")
+        raise
