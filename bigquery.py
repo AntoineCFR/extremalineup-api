@@ -195,3 +195,24 @@ def get_bigquery_users():
     except Exception as e:
         logging.error(f"Erreur lors de la récupération des utilisateurs: {e}")
         raise
+
+def update_bigquery_user_phone(user_id, phone_number):
+    """
+    Met à jour le numéro de téléphone d'un utilisateur dans BigQuery.
+    Args:
+        user_id (int): ID de l'utilisateur (INT64).
+        phone_number (str): Numéro de téléphone (ex: "+33 1 23 45 67 89").
+    """
+    try:
+        # Échappe les quotes pour éviter les injections SQL
+        escaped_phone = phone_number.replace("'", "''")
+        query = f"""
+        UPDATE `{Config.BQ_USERS}`
+        SET phone_number = '{escaped_phone}'
+        WHERE id = {user_id}
+        """
+        client.query(query).result()
+        logging.info(f"Numéro de téléphone mis à jour pour l'utilisateur {user_id}.")
+    except Exception as e:
+        logging.error(f"Erreur lors de la mise à jour du numéro de téléphone: {e}")
+        raise

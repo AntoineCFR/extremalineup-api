@@ -11,7 +11,8 @@ from bigquery import (
     get_bigquery_user_id,
     store_bigquery_weather_forecast,
     get_bigquery_weather_forecast,
-    get_bigquery_users
+    get_bigquery_users,
+    update_bigquery_user_phone
 )
 from config import Config
 
@@ -169,6 +170,30 @@ def get_users():
         return jsonify(users), 200
     except Exception as e:
         logger.error(f"Erreur dans /users: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    
+@app.route('/users/<int:user_id>/phone', methods=['POST'])
+def update_user_phone(user_id):
+    """
+    Met à jour le numéro de téléphone d'un utilisateur.
+    Body JSON attendu: {"phone_number": "+33 1 23 45 67 89"}
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+
+    phone_number = data.get('phone_number')
+    if not phone_number:
+        return jsonify({"error": "phone_number is required"}), 400
+
+    try:
+        update_bigquery_user_phone(user_id, phone_number)
+        return jsonify({
+            "status": "success",
+            "message": "Numéro de téléphone mis à jour."
+        }), 200
+    except Exception as e:
+        logger.error(f"Erreur dans /users/{user_id}/phone: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
