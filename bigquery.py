@@ -159,7 +159,7 @@ def get_bigquery_weather_forecast():
         logging.error(f"Erreur lors de la récupération de la météo: {e}")
         raise
 
-def get_users():
+def get_bigquery_users():
     """Récupère la liste de tous les utilisateurs avec username, phone_number, last_lat, last_lng.
     Retourne une liste de dictionnaires avec des types natifs Python (compatible JSON).
     """
