@@ -158,3 +158,32 @@ def get_weather_forecast():
     except Exception as e:
         logging.error(f"Erreur lors de la récupération de la météo: {e}")
         raise
+
+def get_users():
+    """Récupère la liste de tous les utilisateurs avec username, phone_number, last_lat, last_lng."""
+    try:
+        query = f"""
+        SELECT
+            id,
+            username,
+            phone_number,
+            last_lat,
+            last_lng
+        FROM
+            `{Config.BQ_DATASET}.users`
+        ORDER BY
+            username
+        """
+        df = client.query(query).result().to_dataframe()
+        # Convertis en liste de dictionnaires (format JSON-friendly)
+        users = df.to_dict('records')
+        # Convertis les valeurs BigQuery (ex: numpy.float64) en types natifs Python
+        for user in users:
+            if pandas.notna(user.get('last_lat')):
+                user['last_lat'] = float(user['last_lat'])
+            if pandas.notna(user.get('last_lng')):
+                user['last_lng'] = float(user['last_lng'])
+        return users
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération des utilisateurs: {e}")
+        raise

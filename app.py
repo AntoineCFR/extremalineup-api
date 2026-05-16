@@ -161,5 +161,15 @@ def get_weather():
         logger.error(f"Erreur dans /weather: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/users', methods=['GET'])
+def get_users():
+    """Récupère la liste de tous les utilisateurs."""
+    try:
+        users = get_users()  # Appel à la fonction BigQuery
+        return jsonify(users), 200
+    except Exception as e:
+        logger.error(f"Erreur dans /users: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host=Config.FLASK_HOST, port=Config.FLASK_PORT)
