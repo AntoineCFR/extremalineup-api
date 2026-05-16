@@ -160,7 +160,9 @@ def get_weather_forecast():
         raise
 
 def get_users():
-    """Récupère la liste de tous les utilisateurs avec username, phone_number, last_lat, last_lng."""
+    """Récupère la liste de tous les utilisateurs avec username, phone_number, last_lat, last_lng.
+    Retourne une liste de dictionnaires avec des types natifs Python (compatible JSON).
+    """
     try:
         query = f"""
         SELECT
@@ -175,15 +177,21 @@ def get_users():
             username
         """
         df = client.query(query).result().to_dataframe()
-        # Convertis en liste de dictionnaires (format JSON-friendly)
-        users = df.to_dict('records')
-        # Convertis les valeurs BigQuery (ex: numpy.float64) en types natifs Python
-        for user in users:
-            if pd.notna(user.get('last_lat')):
-                user['last_lat'] = float(user['last_lat'])
-            if pd.notna(user.get('last_lng')):
-                user['last_lng'] = float(user['last_lng'])
-        return users
+
+        # ✅ Convertit explicitement chaque ligne en dictionnaire avec des types natifs Python
+        users = []
+        for _, row in df.iterrows():
+            user = {
+                "id": int(row["id"]) if not pd.isna(row["id"]) else None,
+                "username": str(row["username"]) if not pd.isna(row["username"]) else None,
+                "phone_number": str(row["phone_number"]) if not pd.isna(row["phone_number"]) else None,
+                "last_lat": float(row["last_lat"]) if not pd.isna(row["last_lat"]) else None,
+                "last_lng": float(row["last_lng"]) if not pd.isna(row["last_lng"]) else None,
+            }
+            users.append(user)
+
+        return users  # ✅ Liste de dicts avec des types natifs (int, str, float, None)
+
     except Exception as e:
         logging.error(f"Erreur lors de la récupération des utilisateurs: {e}")
         raise
