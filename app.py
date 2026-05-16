@@ -6,11 +6,12 @@ import requests
 import logging
 from bigquery import (
     get_bigquery_timetable,
-    get_user_favorites,
-    update_user_favorites,
-    get_user_id,
-    store_weather_forecast,
-    get_weather_forecast
+    get_bigquery_user_favorites,
+    update_bigquery_user_favorites,
+    get_bigquery_user_id,
+    store_bigquery_weather_forecast,
+    get_bigquery_weather_forecast,
+    get_bigquery_users
 )
 from config import Config
 
@@ -41,7 +42,7 @@ def get_favorites():
 
     try:
         user_id_int = int(user_id)
-        favorite_set_ids = get_user_favorites(user_id_int)
+        favorite_set_ids = get_bigquery_user_favorites(user_id_int)
         return jsonify({"favorites": [{"set_id": int(sid)} for sid in favorite_set_ids]})
     except ValueError:
         return jsonify({"error": "user_id must be an integer"}), 400
@@ -59,7 +60,7 @@ def save_favorites():
         return jsonify({"error": "user_id is required"}), 400
 
     try:
-        update_user_favorites(int(user_id), favorites_list)
+        update_bigquery_user_favorites(int(user_id), favorites_list)
         return jsonify({"status": "success"})
     except ValueError:
         return jsonify({"error": "user_id must be an integer"}), 400
@@ -74,7 +75,7 @@ def check_user():
         return jsonify({"error": "username is required"}), 400
 
     try:
-        user_id = get_user_id(username)
+        user_id = get_bigquery_user_id(username)
         if user_id is None:
             return jsonify({"exists": False})
         return jsonify({"exists": True, "user_id": int(user_id)})
@@ -82,7 +83,6 @@ def check_user():
         logger.error(f"Erreur dans /users/check: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# --- NOUVEAUX ENDPOINTS POUR LA MÉTÉO ---
 @app.route('/update-weather', methods=['POST'])
 def update_weather():
     """
@@ -133,7 +133,7 @@ def update_weather():
             return jsonify({"status": "error", "message": "Aucune date ne correspond aux jours du festival."}), 500
 
         # Stocke dans BigQuery (écrase les anciennes données pour ces jours)
-        store_weather_forecast(weather_forecasts)
+        store_bigquery_weather_forecast(weather_forecasts)
         logger.info(f"Météo stockée pour {len(weather_forecasts)} jours.")
         return jsonify({"status": "success", "message": f"Météo stockée pour {len(weather_forecasts)} jours."}), 200
 
@@ -151,7 +151,7 @@ def get_weather():
     Appelé par ton appli Flutter.
     """
     try:
-        forecasts = get_weather_forecast()
+        forecasts = get_bigquery_weather_forecast()
         # Convertis les dates en format ISO pour Flutter (optionnel)
         for forecast in forecasts:
             if isinstance(forecast['date'], datetime):
@@ -165,7 +165,7 @@ def get_weather():
 def get_users():
     """Récupère la liste de tous les utilisateurs."""
     try:
-        users = get_users()  # Appel à la fonction BigQuery
+        users = get_bigquery_users()  # Appel à la fonction BigQuery
         return jsonify(users), 200
     except Exception as e:
         logger.error(f"Erreur dans /users: {str(e)}")

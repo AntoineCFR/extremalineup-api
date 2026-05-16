@@ -21,7 +21,7 @@ def get_bigquery_timetable():
         logging.error(f"Erreur lors de la récupération de la timetable: {e}")
         raise
 
-def get_user_favorites(user_id):
+def get_bigquery_user_favorites(user_id):
     """Récupère UNIQUEMENT les set_id favoris d'un utilisateur via son user_id (INT64)."""
     try:
         query = f"""
@@ -35,7 +35,7 @@ def get_user_favorites(user_id):
         logging.error(f"Erreur lors de la récupération des set_id favoris: {e}")
         raise
 
-def update_user_favorites(user_id, favorites_list):
+def update_bigquery_user_favorites(user_id, favorites_list):
     """Met à jour TOUS les favoris d'un utilisateur via son user_id (INT64)."""
     try:
         # 1. Supprime les anciens favoris de l'utilisateur
@@ -59,7 +59,7 @@ def update_user_favorites(user_id, favorites_list):
         logging.error(f"Erreur lors de la mise à jour des favoris: {e}")
         raise
 
-def get_user_id(username):
+def get_bigquery_user_id(username):
     """Récupère l'ID d'un utilisateur depuis son username (STRING). Retourne None si introuvable."""
     try:
         query = f"""
@@ -73,7 +73,7 @@ def get_user_id(username):
         logging.error(f"Erreur lors de la récupération de l'user_id: {e}")
         raise
 
-def user_exists(username):
+def bigquery_user_exists(username):
     """Vérifie si un utilisateur existe dans la table users (via son username)."""
     try:
         query = f"""
@@ -87,7 +87,7 @@ def user_exists(username):
         logging.error(f"Erreur lors de la vérification de l'utilisateur: {e}")
         raise
 
-def store_weather_forecast(weather_data):
+def store_bigquery_weather_forecast(weather_data):
     """
     Stocke les prévisions météo pour les 3 jours du festival dans BigQuery.
     Args:
@@ -129,7 +129,7 @@ def store_weather_forecast(weather_data):
         logging.error(f"Erreur lors du stockage de la météo: {e}")
         raise
 
-def get_weather_forecast():
+def get_bigquery_weather_forecast():
     """
     Récupère les prévisions météo pour les 3 jours du festival depuis BigQuery.
     Returns:
