@@ -216,3 +216,23 @@ def update_bigquery_user_phone(user_id, phone_number):
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour du numéro de téléphone: {e}")
         raise
+
+def update_bigquery_user_location(user_id, lat, lng):
+    """
+    Met à jour les coordonnées de localisation d'un utilisateur dans BigQuery.
+    Args:
+        user_id (int): ID de l'utilisateur.
+        lat (float): Latitude.
+        lng (float): Longitude.
+    """
+    try:
+        query = f"""
+        UPDATE `{Config.BQ_USERS}`
+        SET last_lat = {lat}, last_lng = {lng}
+        WHERE id = {user_id}
+        """
+        client.query(query).result()
+        logging.info(f"Localisation mise à jour pour l'utilisateur {user_id}.")
+    except Exception as e:
+        logging.error(f"Erreur lors de la mise à jour de la localisation: {e}")
+        raise
