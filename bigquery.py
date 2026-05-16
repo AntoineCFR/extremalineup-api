@@ -1,7 +1,7 @@
 import logging
 from google.cloud import bigquery
 from google.oauth2 import service_account
-import pandas
+import pandas as pd
 from config import Config
 
 def get_google_credentials(credentials_path=None):
@@ -64,7 +64,7 @@ def get_user_id(username):
     try:
         query = f"""
         SELECT id
-        FROM `{Config.BQ_DATASET}.users`
+        FROM `{Config.BQ_USERS}`
         WHERE username = '{username.replace("'", "''")}'  # Échappe les quotes pour éviter les injections SQL
         """
         df = client.query(query).result().to_dataframe()
@@ -78,7 +78,7 @@ def user_exists(username):
     try:
         query = f"""
         SELECT COUNT(*) as count
-        FROM `{Config.BQ_DATASET}.users`
+        FROM `{Config.BQ_USERS}`
         WHERE username = '{username.replace("'", "''")}'  # Échappe les quotes
         """
         df = client.query(query).result().to_dataframe()
@@ -170,7 +170,7 @@ def get_users():
             last_lat,
             last_lng
         FROM
-            `{Config.BQ_DATASET}.users`
+            `{Config.BQ_USERS}`
         ORDER BY
             username
         """
@@ -179,9 +179,9 @@ def get_users():
         users = df.to_dict('records')
         # Convertis les valeurs BigQuery (ex: numpy.float64) en types natifs Python
         for user in users:
-            if pandas.notna(user.get('last_lat')):
+            if pd.notna(user.get('last_lat')):
                 user['last_lat'] = float(user['last_lat'])
-            if pandas.notna(user.get('last_lng')):
+            if pd.notna(user.get('last_lng')):
                 user['last_lng'] = float(user['last_lng'])
         return users
     except Exception as e:
