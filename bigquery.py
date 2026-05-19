@@ -31,7 +31,7 @@ def get_bigquery_user_favorites(user_id=None):
             # Mode "un seul utilisateur"
             query = """
             SELECT set_id, isfavorite, notation
-            FROM `extremalineup.dataset.user_favorites`
+            FROM `{Config.BQ_USER_FAVORITES}`
             WHERE user_id = @user_id
             ORDER BY set_id
             """
@@ -52,7 +52,7 @@ def get_bigquery_user_favorites(user_id=None):
             # Mode "TOUS les utilisateurs"
             query = """
             SELECT user_id, set_id, isfavorite, notation
-            FROM `extremalineup.dataset.user_favorites`
+            FROM `{Config.BQ_USER_FAVORITES}`
             ORDER BY user_id, set_id
             """
             rows = client.query(query).result()
@@ -78,7 +78,7 @@ def toggle_bigquery_user_favorite(user_id, set_id):
     try:
         query = """
         SELECT isfavorite
-        FROM `extremalineup.dataset.user_favorites`
+        FROM `{Config.BQ_USER_FAVORITES}`
         WHERE user_id = @user_id AND set_id = @set_id
         """
         job_config = bigquery.QueryJobConfig(
@@ -92,7 +92,7 @@ def toggle_bigquery_user_favorite(user_id, set_id):
         new_value = not current_value
 
         update_query = """
-        UPDATE `extremalineup.dataset.user_favorites`
+        UPDATE `{Config.BQ_USER_FAVORITES}`
         SET isfavorite = @new_value
         WHERE user_id = @user_id AND set_id = @set_id
         """
@@ -116,7 +116,7 @@ def update_bigquery_user_favorite_notation(user_id, set_id, notation):
     """
     try:
         update_query = """
-        UPDATE `extremalineup.dataset.user_favorites`
+        UPDATE `{Config.BQ_USER_FAVORITES}`
         SET notation = @notation
         WHERE user_id = @user_id AND set_id = @set_id
         """
