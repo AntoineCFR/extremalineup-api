@@ -32,7 +32,7 @@ def get_bigquery_user_favorites(user_id=None):
             query = """
             SELECT set_id, isfavorite, notation
             FROM `{Config.BQ_USER_FAVORITES}`
-            WHERE user_id = @user_id
+            WHERE user_id = {user_id}
             ORDER BY set_id
             """
             job_config = bigquery.QueryJobConfig(
@@ -79,7 +79,7 @@ def toggle_bigquery_user_favorite(user_id, set_id):
         query = """
         SELECT isfavorite
         FROM `{Config.BQ_USER_FAVORITES}`
-        WHERE user_id = @user_id AND set_id = @set_id
+        WHERE user_id = {user_id} AND set_id = {set_id}
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -93,8 +93,8 @@ def toggle_bigquery_user_favorite(user_id, set_id):
 
         update_query = """
         UPDATE `{Config.BQ_USER_FAVORITES}`
-        SET isfavorite = @new_value
-        WHERE user_id = @user_id AND set_id = @set_id
+        SET isfavorite = {new_value}
+        WHERE user_id = {user_id} AND set_id = {set_id}
         """
         update_job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -117,8 +117,8 @@ def update_bigquery_user_favorite_notation(user_id, set_id, notation):
     try:
         update_query = """
         UPDATE `{Config.BQ_USER_FAVORITES}`
-        SET notation = @notation
-        WHERE user_id = @user_id AND set_id = @set_id
+        SET notation = {notation}
+        WHERE user_id = {user_id} AND set_id = {set_id}
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
