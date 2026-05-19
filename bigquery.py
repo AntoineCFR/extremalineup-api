@@ -8,7 +8,6 @@ def get_google_credentials(credentials_path=None):
     credentials_path = credentials_path or Config.GOOGLE_APPLICATION_CREDENTIALS
     return service_account.Credentials.from_service_account_file(credentials_path)
 
-# Initialise le client BigQuery avec les credentials
 credentials = get_google_credentials()
 client = bigquery.Client(project=Config.BQ_PROJECT, credentials=credentials)
 
@@ -21,51 +20,126 @@ def get_bigquery_timetable():
         logging.error(f"Erreur lors de la récupération de la timetable: {e}")
         raise
 
-def get_bigquery_user_favorites(user_id):
-    """Récupère UNIQUEMENT les set_id favoris d'un utilisateur via son user_id (INT64)."""
+def get_bigquery_user_favorites(user_id=None):
+    """
+    Récupère les favoris depuis BigQuery.
+    - Si user_id est fourni : retourne [{"set_id": 1, "isfavorite": true, "notation": 5}, ...] pour CET utilisateur
+    - Si user_id est None : retourne [{"user_id": 1, "set_id": 42, "isfavorite": true, "notation": 5}, ...] pour TOUS les utilisateurs
+    """
     try:
-        query = f"""
-        SELECT set_id
-        FROM `{Config.BQ_USER_FAVORITES}`
-        WHERE user_id = {user_id}  # user_id est un INT64, pas besoin de quotes
-        """
-        df = client.query(query).result().to_dataframe()
-        return df['set_id'].tolist()  # Retourne une liste de set_id (ex: [28, 45, 67])
-    except Exception as e:
-        logging.error(f"Erreur lors de la récupération des set_id favoris: {e}")
-        raise
-
-def update_bigquery_user_favorites(user_id, favorites_list):
-    """Met à jour TOUS les favoris d'un utilisateur via son user_id (INT64)."""
-    try:
-        # 1. Supprime les anciens favoris de l'utilisateur
-        delete_query = f"""
-        DELETE FROM `{Config.BQ_USER_FAVORITES}`
-        WHERE user_id = {user_id}  # user_id est un INT64
-        """
-        client.query(delete_query).result()
-
-        # 2. Ajoute les nouveaux favoris (si la liste n'est pas vide)
-        if favorites_list:
-            # Construis les valeurs sans quotes pour user_id (INT64)
-            values = ", ".join([f"({user_id}, {set_id})" for set_id in favorites_list])
-            insert_query = f"""
-            INSERT INTO `{Config.BQ_USER_FAVORITES}`
-            (user_id, set_id)
-            VALUES {values}
+        if user_id is not None:
+            # Mode "un seul utilisateur"
+            query = """
+            SELECT set_id, isfavorite, notation
+            FROM `extremalineup.dataset.user_favorites`
+            WHERE user_id = @user_id
+            ORDER BY set_id
             """
-            client.query(insert_query).result()
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("user_id", "INT64", user_id)]
+            )
+            rows = client.query(query, job_config=job_config).result()
+
+            favorites = []
+            for row in rows:
+                favorites.append({
+                    "set_id": int(row.set_id),
+                    "isfavorite": bool(row.isfavorite),
+                    "notation": int(row.notation) if row.notation is not None else None
+                })
+            return favorites
+        else:
+            # Mode "TOUS les utilisateurs"
+            query = """
+            SELECT user_id, set_id, isfavorite, notation
+            FROM `extremalineup.dataset.user_favorites`
+            ORDER BY user_id, set_id
+            """
+            rows = client.query(query).result()
+
+            favorites = []
+            for row in rows:
+                favorites.append({
+                    "user_id": int(row.user_id),
+                    "set_id": int(row.set_id),
+                    "isfavorite": bool(row.isfavorite),
+                    "notation": int(row.notation) if row.notation is not None else None
+                })
+            return favorites
     except Exception as e:
-        logging.error(f"Erreur lors de la mise à jour des favoris: {e}")
+        logging.error(f"Erreur lors de la récupération des favoris: {e}")
         raise
 
+def toggle_bigquery_user_favorite(user_id, set_id):
+    """
+    Toggle isfavorite pour un couple (user_id, set_id).
+    Retourne la nouvelle valeur de isfavorite.
+    """
+    try:
+        query = """
+        SELECT isfavorite
+        FROM `extremalineup.dataset.user_favorites`
+        WHERE user_id = @user_id AND set_id = @set_id
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+            ]
+        )
+        rows = list(client.query(query, job_config=job_config).result())
+        current_value = rows[0].isfavorite if rows else False
+        new_value = not current_value
+
+        update_query = """
+        UPDATE `extremalineup.dataset.user_favorites`
+        SET isfavorite = @new_value
+        WHERE user_id = @user_id AND set_id = @set_id
+        """
+        update_job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("new_value", "BOOL", new_value),
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+            ]
+        )
+        client.query(update_query, job_config=update_job_config).result()
+        return new_value
+    except Exception as e:
+        logging.error(f"Erreur lors du toggle favori: {e}")
+        raise
+
+def update_bigquery_user_favorite_notation(user_id, set_id, notation):
+    """
+    Met à jour la notation pour un couple (user_id, set_id).
+    notation peut être None pour supprimer la note.
+    """
+    try:
+        update_query = """
+        UPDATE `extremalineup.dataset.user_favorites`
+        SET notation = @notation
+        WHERE user_id = @user_id AND set_id = @set_id
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("notation", "INT64", notation),
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+            ]
+        )
+        client.query(update_query, job_config=job_config).result()
+    except Exception as e:
+        logging.error(f"Erreur lors de la mise à jour de la notation: {e}")
+        raise
+
+# --- Fonctions inchangées ---
 def get_bigquery_user_id(username):
     """Récupère l'ID d'un utilisateur depuis son username (STRING). Retourne None si introuvable."""
     try:
         query = f"""
         SELECT id
         FROM `{Config.BQ_USERS}`
-        WHERE username = '{username.replace("'", "''")}'  # Échappe les quotes pour éviter les injections SQL
+        WHERE username = '{username.replace("'", "''")}'
         """
         df = client.query(query).result().to_dataframe()
         return df.iloc[0]['id'] if not df.empty else None
@@ -79,7 +153,7 @@ def bigquery_user_exists(username):
         query = f"""
         SELECT COUNT(*) as count
         FROM `{Config.BQ_USERS}`
-        WHERE username = '{username.replace("'", "''")}'  # Échappe les quotes
+        WHERE username = '{username.replace("'", "''")}'
         """
         df = client.query(query).result().to_dataframe()
         return df.iloc[0]['count'] > 0
@@ -88,37 +162,18 @@ def bigquery_user_exists(username):
         raise
 
 def store_bigquery_weather_forecast(weather_data):
-    """
-    Stocke les prévisions météo pour les 3 jours du festival dans BigQuery.
-    Args:
-        weather_data (list): Liste de dictionnaires avec les données météo pour chaque jour.
-                             Format attendu: [
-                                 {
-                                     "date": "2026-05-15",
-                                     "day_name": "Vendredi",
-                                     "temperature": 18.5,
-                                     "description": "Partiellement nuageux",
-                                     "icon": "https://.../116.png",
-                                     "humidity": 65,
-                                     "wind_speed": 4.2,
-                                     "festival_day": "friday"
-                                 },
-                                 ...
-                             ]
-    """
+    """Stocke les prévisions météo pour les 3 jours du festival dans BigQuery."""
     try:
         if not weather_data:
             logging.warning("Aucune donnée météo fournie.")
             return
 
-        # Supprime les anciennes données pour éviter les doublons
         delete_query = f"""
         DELETE FROM `{Config.BQ_DATASET}.{Config.BQ_WEATHER_TABLE}`
         WHERE festival_day IN ('friday', 'saturday', 'sunday')
         """
         client.query(delete_query).result()
 
-        # Insère les nouvelles données
         table_ref = client.dataset(Config.BQ_DATASET).table(Config.BQ_WEATHER_TABLE)
         errors = client.insert_rows_json(table_ref, weather_data)
         if errors:
@@ -130,11 +185,7 @@ def store_bigquery_weather_forecast(weather_data):
         raise
 
 def get_bigquery_weather_forecast():
-    """
-    Récupère les prévisions météo pour les 3 jours du festival depuis BigQuery.
-    Returns:
-        list: Liste de dictionnaires avec les données météo pour chaque jour.
-    """
+    """Récupère les prévisions météo pour les 3 jours du festival depuis BigQuery."""
     try:
         query = f"""
         SELECT
@@ -154,15 +205,13 @@ def get_bigquery_weather_forecast():
             date
         """
         df = client.query(query).result().to_dataframe()
-        return df.to_dict('records')  # Retourne une liste de dicts
+        return df.to_dict('records')
     except Exception as e:
         logging.error(f"Erreur lors de la récupération de la météo: {e}")
         raise
 
 def get_bigquery_users():
-    """Récupère la liste de tous les utilisateurs avec username, phone_number, last_lat, last_lng.
-    Retourne une liste de dictionnaires avec des types natifs Python (compatible JSON).
-    """
+    """Récupère la liste de tous les utilisateurs avec username, phone_number, last_lat, last_lng."""
     try:
         query = f"""
         SELECT
@@ -178,7 +227,6 @@ def get_bigquery_users():
         """
         df = client.query(query).result().to_dataframe()
 
-        # ✅ Convertit explicitement chaque ligne en dictionnaire avec des types natifs Python
         users = []
         for _, row in df.iterrows():
             user = {
@@ -190,21 +238,14 @@ def get_bigquery_users():
             }
             users.append(user)
 
-        return users  # ✅ Liste de dicts avec des types natifs (int, str, float, None)
-
+        return users
     except Exception as e:
         logging.error(f"Erreur lors de la récupération des utilisateurs: {e}")
         raise
 
 def update_bigquery_user_phone(user_id, phone_number):
-    """
-    Met à jour le numéro de téléphone d'un utilisateur dans BigQuery.
-    Args:
-        user_id (int): ID de l'utilisateur (INT64).
-        phone_number (str): Numéro de téléphone (ex: "+33 1 23 45 67 89").
-    """
+    """Met à jour le numéro de téléphone d'un utilisateur dans BigQuery."""
     try:
-        # Échappe les quotes pour éviter les injections SQL
         escaped_phone = phone_number.replace("'", "''")
         query = f"""
         UPDATE `{Config.BQ_USERS}`
@@ -218,13 +259,7 @@ def update_bigquery_user_phone(user_id, phone_number):
         raise
 
 def update_bigquery_user_location(user_id, lat, lng):
-    """
-    Met à jour les coordonnées de localisation d'un utilisateur dans BigQuery.
-    Args:
-        user_id (int): ID de l'utilisateur.
-        lat (float): Latitude.
-        lng (float): Longitude.
-    """
+    """Met à jour les coordonnées de localisation d'un utilisateur dans BigQuery."""
     try:
         query = f"""
         UPDATE `{Config.BQ_USERS}`
