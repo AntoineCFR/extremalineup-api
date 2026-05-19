@@ -29,7 +29,7 @@ def get_bigquery_user_favorites(user_id=None):
     try:
         if user_id is not None:
             # Mode "un seul utilisateur"
-            query = """
+            query = f"""
             SELECT set_id, isfavorite, notation
             FROM `{Config.BQ_USER_FAVORITES}`
             WHERE user_id = {user_id}
@@ -50,7 +50,7 @@ def get_bigquery_user_favorites(user_id=None):
             return favorites
         else:
             # Mode "TOUS les utilisateurs"
-            query = """
+            query = f"""
             SELECT user_id, set_id, isfavorite, notation
             FROM `{Config.BQ_USER_FAVORITES}`
             ORDER BY user_id, set_id
@@ -76,7 +76,7 @@ def toggle_bigquery_user_favorite(user_id, set_id):
     Retourne la nouvelle valeur de isfavorite.
     """
     try:
-        query = """
+        query = f"""
         SELECT isfavorite
         FROM `{Config.BQ_USER_FAVORITES}`
         WHERE user_id = {user_id} AND set_id = {set_id}
@@ -91,7 +91,7 @@ def toggle_bigquery_user_favorite(user_id, set_id):
         current_value = rows[0].isfavorite if rows else False
         new_value = not current_value
 
-        update_query = """
+        update_query = f"""
         UPDATE `{Config.BQ_USER_FAVORITES}`
         SET isfavorite = {new_value}
         WHERE user_id = {user_id} AND set_id = {set_id}
@@ -115,7 +115,7 @@ def update_bigquery_user_favorite_notation(user_id, set_id, notation):
     notation peut être None pour supprimer la note.
     """
     try:
-        update_query = """
+        query = f"""
         UPDATE `{Config.BQ_USER_FAVORITES}`
         SET notation = {notation}
         WHERE user_id = {user_id} AND set_id = {set_id}
@@ -127,7 +127,7 @@ def update_bigquery_user_favorite_notation(user_id, set_id, notation):
                 bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
             ]
         )
-        client.query(update_query, job_config=job_config).result()
+        client.query(query, job_config=job_config).result()
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour de la notation: {e}")
         raise
