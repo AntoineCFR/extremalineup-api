@@ -14,7 +14,10 @@ from bigquery import (
     get_bigquery_weather_forecast,
     get_bigquery_users,
     update_bigquery_user_phone,
-    update_bigquery_user_location
+    update_bigquery_user_location,
+    get_bigquery_district,
+    get_bigquery_districts,
+    update_bigquery_district
 )
 from config import Config
 
@@ -246,6 +249,54 @@ def rate_favorite():
         return jsonify({"error": "user_id and set_id must be integers, notation must be integer or null"}), 400
     except Exception as e:
         logger.error(f"Erreur dans /api/user-favorites/rate: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ========== NOUVEAUX ENDPOINTS POUR LES DISTRICTS ==========
+
+@app.route('/api/districts', methods=['GET'])
+def get_districts():
+    """Récupère tous les districts."""
+    try:
+        districts = get_bigquery_districts()
+        return jsonify(districts), 200
+    except Exception as e:
+        logger.error(f"Erreur dans /api/districts: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/districts/<district_name>', methods=['GET'])
+def get_district(district_name):
+    """Récupère un district spécifique."""
+    try:
+        district = get_bigquery_district(district_name)
+        if district is None:
+            return jsonify({"error": "District non trouvé"}), 404
+        return jsonify(district), 200
+    except Exception as e:
+        logger.error(f"Erreur dans /api/districts/{district_name}: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/districts/<district_name>', methods=['PUT'])
+def update_district(district_name):
+    """Met à jour les coordonnées d'un district."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+
+    required_fields = [
+        'lat_avg', 'lon_avg', 'lat_avd', 'lon_avd',
+        'lat_arg', 'lon_arg', 'lat_ard', 'lon_ard',
+        'lat_rally_point', 'lon_rally_point'
+    ]
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"error": f"Le champ {field} est requis"}), 400
+
+    try:
+        district_data = {'district': district_name, **data}
+        update_bigquery_district(district_data)
+        return jsonify({"status": "success", "message": "District mis à jour."}), 200
+    except Exception as e:
+        logger.error(f"Erreur dans /api/districts/{district_name}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

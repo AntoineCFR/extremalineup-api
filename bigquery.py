@@ -271,3 +271,101 @@ def update_bigquery_user_location(user_id, lat, lng):
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour de la localisation: {e}")
         raise
+
+
+def get_bigquery_districts():
+    """Récupère tous les districts depuis BigQuery."""
+    try:
+        query = f"SELECT * FROM `{Config.BQ_DISTRICTS}`"
+        rows = client.query(query).result()
+        districts = []
+        for row in rows:
+            districts.append({
+                "district": str(row.district),
+                "lat_avg": float(row.lat_avg) if row.lat_avg is not None else None,
+                "lon_avg": float(row.lon_avg) if row.lon_avg is not None else None,
+                "lat_avd": float(row.lat_avd) if row.lat_avd is not None else None,
+                "lon_avd": float(row.lon_avd) if row.lon_avd is not None else None,
+                "lat_arg": float(row.lat_arg) if row.lat_arg is not None else None,
+                "lon_arg": float(row.lon_arg) if row.lon_arg is not None else None,
+                "lat_ard": float(row.lat_ard) if row.lat_ard is not None else None,
+                "lon_ard": float(row.lon_ard) if row.lon_ard is not None else None,
+                "lat_rally_point": float(row.lat_rally_point) if row.lat_rally_point is not None else None,
+                "lon_rally_point": float(row.lon_rally_point) if row.lon_rally_point is not None else None,
+            })
+        return districts
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération des districts: {e}")
+        raise
+
+def get_bigquery_district(district_name):
+    """Récupère un district spécifique par son nom."""
+    try:
+        query = f"""
+        SELECT * FROM `{Config.BQ_DISTRICTS}`
+        WHERE district = @district_name
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("district_name", "STRING", district_name),
+            ]
+        )
+        rows = list(client.query(query, job_config=job_config).result())
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "district": str(row.district),
+            "lat_avg": float(row.lat_avg) if row.lat_avg is not None else None,
+            "lon_avg": float(row.lon_avg) if row.lon_avg is not None else None,
+            "lat_avd": float(row.lat_avd) if row.lat_avd is not None else None,
+            "lon_avd": float(row.lon_avd) if row.lon_avd is not None else None,
+            "lat_arg": float(row.lat_arg) if row.lat_arg is not None else None,
+            "lon_arg": float(row.lon_arg) if row.lon_arg is not None else None,
+            "lat_ard": float(row.lat_ard) if row.lat_ard is not None else None,
+            "lon_ard": float(row.lon_ard) if row.lon_ard is not None else None,
+            "lat_rally_point": float(row.lat_rally_point) if row.lat_rally_point is not None else None,
+            "lon_rally_point": float(row.lon_rally_point) if row.lon_rally_point is not None else None,
+        }
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération du district {district_name}: {e}")
+        raise
+
+def update_bigquery_district(district_data):
+    """Met à jour les coordonnées d'un district."""
+    try:
+        query = f"""
+        UPDATE `{Config.BQ_DISTRICTS}`
+        SET
+            lat_avg = @lat_avg,
+            lon_avg = @lon_avg,
+            lat_avd = @lat_avd,
+            lon_avd = @lon_avd,
+            lat_arg = @lat_arg,
+            lon_arg = @lon_arg,
+            lat_ard = @lat_ard,
+            lon_ard = @lon_ard,
+            lat_rally_point = @lat_rally_point,
+            lon_rally_point = @lon_rally_point
+        WHERE district = @district
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("district", "STRING", district_data["district"]),
+                bigquery.ScalarQueryParameter("lat_avg", "FLOAT64", district_data["lat_avg"]),
+                bigquery.ScalarQueryParameter("lon_avg", "FLOAT64", district_data["lon_avg"]),
+                bigquery.ScalarQueryParameter("lat_avd", "FLOAT64", district_data["lat_avd"]),
+                bigquery.ScalarQueryParameter("lon_avd", "FLOAT64", district_data["lon_avd"]),
+                bigquery.ScalarQueryParameter("lat_arg", "FLOAT64", district_data["lat_arg"]),
+                bigquery.ScalarQueryParameter("lon_arg", "FLOAT64", district_data["lon_arg"]),
+                bigquery.ScalarQueryParameter("lat_ard", "FLOAT64", district_data["lat_ard"]),
+                bigquery.ScalarQueryParameter("lon_ard", "FLOAT64", district_data["lon_ard"]),
+                bigquery.ScalarQueryParameter("lat_rally_point", "FLOAT64", district_data["lat_rally_point"]),
+                bigquery.ScalarQueryParameter("lon_rally_point", "FLOAT64", district_data["lon_rally_point"]),
+            ]
+        )
+        client.query(query, job_config=job_config).result()
+        logging.info(f"District {district_data['district']} mis à jour.")
+    except Exception as e:
+        logging.error(f"Erreur lors de la mise à jour du district {district_data['district']}: {e}")
+        raise

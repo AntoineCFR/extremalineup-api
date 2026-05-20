@@ -30,6 +30,8 @@ class Config:
     BQ_TIMETABLE = f"{BQ_PROJECT}.{BQ_DATASET}.timetable"
     BQ_USER_FAVORITES = f"{BQ_PROJECT}.{BQ_DATASET}.user_favorites"
     BQ_USERS = f"{BQ_PROJECT}.{BQ_DATASET}.users"
+    BQ_DISTRICTS = f"{BQ_PROJECT}.{BQ_DATASET}.districts"
+    BQ_GEOLOC = f"{BQ_PROJECT}.{BQ_DATASET}.geoloc"
 
     # Flask
     FLASK_PORT = 5000
