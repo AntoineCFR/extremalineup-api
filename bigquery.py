@@ -162,8 +162,7 @@ def bigquery_user_exists(username):
         raise
 
 def store_bigquery_weather_forecast(weather_data):
-    client = bigquery.Client()
-
+    
     # Référence à la table de destination
     table_ref = client.dataset(Config.BQ_DATASET).table(Config.BQ_WEATHER_TABLE)
 
