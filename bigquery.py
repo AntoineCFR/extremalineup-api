@@ -162,27 +162,26 @@ def bigquery_user_exists(username):
         raise
 
 def store_bigquery_weather_forecast(weather_data):
-    """Stocke les prévisions météo pour les 3 jours du festival dans BigQuery."""
-    try:
-        if not weather_data:
-            logging.warning("Aucune donnée météo fournie.")
-            return
+    client = bigquery.Client()
 
-        delete_query = f"""
-        DELETE FROM `{Config.BQ_DATASET}.{Config.BQ_WEATHER_TABLE}`
-        WHERE festival_day IN ('friday', 'saturday', 'sunday')
-        """
-        client.query(delete_query).result()
+    # Référence à la table de destination
+    table_ref = client.dataset(Config.BQ_DATASET).table(Config.BQ_WEATHER_TABLE)
 
-        table_ref = client.dataset(Config.BQ_DATASET).table(Config.BQ_WEATHER_TABLE)
-        errors = client.insert_rows_json(table_ref, weather_data)
-        if errors:
-            logging.error(f"Erreurs lors de l'insertion dans BigQuery: {errors}")
-            raise Exception(f"Erreurs BigQuery: {errors}")
+    # Configuration pour écraser la table existante
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE",  # Écrase la table
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON
+    )
 
-    except Exception as e:
-        logging.error(f"Erreur lors du stockage de la météo: {e}")
-        raise
+    # Charge les données dans la table (écrase l'ancienne)
+    job = client.load_table_from_json(
+        weather_data,
+        table_ref,
+        job_config=job_config
+    )
+
+    # Attend la fin du job
+    job.result()
 
 def get_bigquery_weather_forecast():
     """Récupère les prévisions météo pour les 3 jours du festival depuis BigQuery."""
