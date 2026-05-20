@@ -1,11 +1,14 @@
 import os
+import json
 
 class Config:
+    # Récupère les credentials JSON depuis l'environnement
     credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        f.write(credentials_json)
-        GOOGLE_APPLICATION_CREDENTIALS = f.name
+    if not credentials_json:
+        raise ValueError("GOOGLE_APPLICATION_CREDENTIALS_JSON must be set in environment variables.")
+
+    # Parse le JSON une fois pour toutes
+    credentials_info = json.loads(credentials_json)
     
     # Clé API WeatherAPI
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
