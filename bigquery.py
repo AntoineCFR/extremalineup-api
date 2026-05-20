@@ -4,10 +4,9 @@ from google.oauth2 import service_account
 import pandas as pd
 from config import Config
 
-def get_google_credentials():
-    return service_account.Credentials.from_service_account_info(
-        Config.credentials_info  # Utilise le dictionnaire directement
-    )
+def get_google_credentials(credentials_path=None):
+    credentials_path = credentials_path or Config.GOOGLE_APPLICATION_CREDENTIALS
+    return service_account.Credentials.from_service_account_file(credentials_path)
 
 credentials = get_google_credentials()
 client = bigquery.Client(project=Config.BQ_PROJECT, credentials=credentials)
