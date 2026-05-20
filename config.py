@@ -32,6 +32,7 @@ class Config:
     BQ_USERS = f"{BQ_PROJECT}.{BQ_DATASET}.users"
     BQ_DISTRICTS = f"{BQ_PROJECT}.{BQ_DATASET}.districts"
     BQ_GEOLOC = f"{BQ_PROJECT}.{BQ_DATASET}.geoloc"
+    BQ_EVENTS = f"{BQ_PROJECT}.{BQ_DATASET}.events"
 
     # Flask
     FLASK_PORT = 5000

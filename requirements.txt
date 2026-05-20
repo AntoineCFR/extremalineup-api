@@ -7,3 +7,4 @@ flask-cors==4.0.0
 gunicorn
 pandas
 db-dtypes
+firebase-admin==6.0.1

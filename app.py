@@ -17,9 +17,15 @@ from bigquery import (
     update_bigquery_user_location,
     get_bigquery_district,
     get_bigquery_districts,
-    update_bigquery_district
+    update_bigquery_district,
+    insert_bigquery_geoloc,
+    get_district_from_coordinates,
+    update_bigquery_user_location_and_district,
+    insert_bigquery_event,
+    update_all_users_district
 )
 from config import Config
+from firebase_cloud_messaging import send_sos_notification
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -297,6 +303,86 @@ def update_district(district_name):
         return jsonify({"status": "success", "message": "District mis à jour."}), 200
     except Exception as e:
         logger.error(f"Erreur dans /api/districts/{district_name}: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ========== NOUVEAUX ENDPOINTS POUR LA GÉOLOC ==========
+
+@app.route('/api/geoloc', methods=['POST'])
+def update_geoloc():
+    """Met à jour la géolocalisation d'un utilisateur et détermine le district."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+
+    user_id = data.get('user_id')
+    lat = data.get('lat')
+    lng = data.get('lng')
+
+    if user_id is None or lat is None or lng is None:
+        return jsonify({"error": "user_id, lat and lng are required"}), 400
+
+    try:
+        user_id_int = int(user_id)
+        lat_float = float(lat)
+        lng_float = float(lng)
+
+        # 1. Insère dans geoloc
+        insert_bigquery_geoloc(user_id_int, lat_float, lng_float)
+
+        # 2. Détermine le district
+        district_name = get_district_from_coordinates(lat_float, lng_float)
+
+        # 3. Met à jour users avec last_lat, last_lng, last_location
+        update_bigquery_user_location_and_district(
+            user_id_int,
+            lat_float,
+            lng_float,
+            district_name if district_name else "?"
+        )
+
+        return jsonify({
+            "status": "success",
+            "district": district_name if district_name else "?"
+        }), 200
+    except ValueError:
+        return jsonify({"error": "Types de données invalides"}), 400
+    except Exception as e:
+        logger.error(f"Erreur /api/geoloc: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ========== NOUVEAUX ENDPOINTS POUR LES ÉVÉNEMENTS ==========
+
+@app.route('/api/events', methods=['POST'])
+def create_event():
+    """Crée un nouvel événement."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+
+    user_id = data.get('user_id')
+    event_type = data.get('event_type')
+
+    if user_id is None or event_type is None:
+        return jsonify({"error": "user_id and event_type are required"}), 400
+
+    try:
+        user_id_int = int(user_id)
+        event_type_str = str(event_type)
+
+        # Insère l'événement
+        insert_bigquery_event(user_id_int, event_type_str)
+
+        # Actions spéciales
+        if event_type_str == "perdu":
+            update_all_users_district()
+        elif event_type_str == "sos":
+            send_sos_notification(user_id_int)
+
+        return jsonify({"status": "success", "event_type": event_type_str}), 200
+    except ValueError:
+        return jsonify({"error": "user_id must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"Erreur /api/events: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':

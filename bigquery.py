@@ -1,4 +1,5 @@
 import logging
+import datetime
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import pandas as pd
@@ -367,3 +368,137 @@ def update_bigquery_district(district_data):
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour du district {district_data['district']}: {e}")
         raise
+
+def get_district_from_coordinates(lat, lng):
+    """Retourne le nom du district si les coordonnées sont à l'intérieur, sinon None."""
+    try:
+        query = f"SELECT * FROM `{Config.BQ_DISTRICTS}`"
+        rows = client.query(query).result()
+
+        for row in rows:
+            # Calcule le rectangle englobant du district
+            coords = [
+                (row.lat_avg, row.lon_avg),
+                (row.lat_avd, row.lon_avd),
+                (row.lat_arg, row.lon_arg),
+                (row.lat_ard, row.lon_ard),
+            ]
+            min_lat = min(c[0] for c in coords)
+            max_lat = max(c[0] for c in coords)
+            min_lon = min(c[1] for c in coords)
+            max_lon = max(c[1] for c in coords)
+
+            # Vérifie si le point est dans le rectangle
+            if min_lat <= lat <= max_lat and min_lon <= lng <= max_lon:
+                return row.district
+        return None
+    except Exception as e:
+        logging.error(f"Erreur get_district_from_coordinates: {e}")
+        raise
+
+def insert_bigquery_geoloc(user_id, lat, lng, district=None):
+    """Insère une nouvelle entrée dans la table geoloc."""
+    try:
+        table_ref = client.dataset(Config.BQ_DATASET).table('geoloc')
+        row = {
+            "user_id": user_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "lat": lat,
+            "lon": lng,
+            "district": district,
+        }
+        errors = client.insert_rows_json(table_ref, [row])
+        if errors:
+            logging.error(f"Erreurs insert geoloc: {errors}")
+            raise Exception(f"Erreurs BigQuery: {errors}")
+    except Exception as e:
+        logging.error(f"Erreur insert_bigquery_geoloc: {e}")
+        raise
+
+def update_bigquery_user_location_and_district(user_id, lat, lng, district):
+    """Met à jour la localisation ET le district d'un utilisateur."""
+    try:
+        query = f"""
+        UPDATE `{Config.BQ_USERS}`
+        SET
+            last_lat = @lat,
+            last_lng = @lng,
+            last_location = @district
+        WHERE id = @user_id
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                bigquery.ScalarQueryParameter("lat", "FLOAT64", lat),
+                bigquery.ScalarQueryParameter("lng", "FLOAT64", lng),
+                bigquery.ScalarQueryParameter("district", "STRING", district if district else "?"),
+            ]
+        )
+        client.query(query, job_config=job_config).result()
+    except Exception as e:
+        logging.error(f"Erreur update_bigquery_user_location_and_district: {e}")
+        raise
+
+def insert_bigquery_event(user_id, event_type):
+    """Insère un nouvel événement."""
+    try:
+        table_ref = client.dataset(Config.BQ_DATASET).table('events')
+        row = {
+            "user_id": user_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "event_type": event_type,
+        }
+        errors = client.insert_rows_json(table_ref, [row])
+        if errors:
+            logging.error(f"Erreurs insert event: {errors}")
+            raise Exception(f"Erreurs BigQuery: {errors}")
+    except Exception as e:
+        logging.error(f"Erreur insert_bigquery_event: {e}")
+        raise
+
+def update_all_users_district():
+    """Met à jour last_location pour TOUS les utilisateurs (appelé quand quelqu'un se déclare perdu)."""
+    try:
+        # Récupère tous les utilisateurs avec une localisation
+        query = f"""
+        SELECT id, last_lat, last_lng FROM `{Config.BQ_USERS}`
+        WHERE last_lat IS NOT NULL AND last_lng IS NOT NULL
+        """
+        rows = client.query(query).result()
+
+        for row in rows:
+            user_id = row.id
+            district = get_district_from_coordinates(row.last_lat, row.last_lng)
+
+            update_query = f"""
+            UPDATE `{Config.BQ_USERS}`
+            SET last_location = @district
+            WHERE id = @user_id
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("district", "STRING", district if district else "?"),
+                    bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                ]
+            )
+            client.query(update_query, job_config=job_config).result()
+
+        logging.info("District mis à jour pour tous les utilisateurs.")
+    except Exception as e:
+        logging.error(f"Erreur update_all_users_district: {e}")
+        raise
+
+def get_username_by_id(user_id):
+    """Récupère le username d'un utilisateur."""
+    try:
+        query = f"SELECT username FROM `{Config.BQ_USERS}` WHERE id = @user_id"
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+            ]
+        )
+        rows = list(client.query(query, job_config=job_config).result())
+        return rows[0].username if rows else "Utilisateur inconnu"
+    except Exception as e:
+        logging.error(f"Erreur get_username_by_id: {str(e)}")
+        return "Utilisateur inconnu"
