@@ -27,7 +27,11 @@ from bigquery import (
     get_bigquery_user_events,
 )
 from config import Config
-from firebase_cloud_messaging import send_sos_notification
+from firebase_cloud_messaging import (
+    send_sos_notification,
+    send_perdu_notification,
+    send_hype_notification,
+)
 import firebase_admin
 from firebase_admin import credentials as firebase_credentials
 
@@ -381,11 +385,14 @@ def create_event():
         # Insère l'événement
         insert_bigquery_event(user_id_int, event_type_str)
 
-        # Actions spéciales
+        # Actions spéciales selon le type d'événement
         if event_type_str == "perdu":
-            update_all_users_district()
+            update_all_users_district()     # met à jour le district de tous les utilisateurs
+            send_perdu_notification(user_id_int)
         elif event_type_str == "sos":
             send_sos_notification(user_id_int)
+        elif event_type_str == "hype":
+            send_hype_notification(user_id_int)
 
         return jsonify({"status": "success", "event_type": event_type_str}), 201
     except ValueError:
