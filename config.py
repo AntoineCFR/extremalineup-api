@@ -2,6 +2,11 @@ import os
 
 class Config:
     credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+    if not credentials_json:
+        raise EnvironmentError(
+            "La variable d'environnement GOOGLE_APPLICATION_CREDENTIALS_JSON n'est pas définie. "
+            "Vérifiez la configuration de votre déploiement (Render → Environment Variables)."
+        )
     import tempfile
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         f.write(credentials_json)
