@@ -22,6 +22,7 @@ from bigquery import (
     get_district_from_coordinates,
     update_bigquery_user_location_and_district,
     insert_bigquery_event,
+    delete_last_bigquery_event,
     update_all_users_district,
     get_bigquery_user_events,
 )
@@ -392,6 +393,23 @@ def create_event():
     except Exception as e:
         logger.error(f"Erreur /api/events: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/events/last', methods=['DELETE'])
+def delete_last_event():
+    """Supprime le dernier événement d'un utilisateur."""
+    user_id_param = request.args.get('user_id')
+    if not user_id_param:
+        return jsonify({"error": "user_id is required"}), 400
+    try:
+        user_id = int(user_id_param)
+        delete_last_bigquery_event(user_id)
+        return jsonify({"status": "success"}), 200
+    except ValueError:
+        return jsonify({"error": "user_id must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"Erreur DELETE /api/events/last: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/events', methods=['GET'])
 def get_events():

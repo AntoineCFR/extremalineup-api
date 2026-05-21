@@ -457,6 +457,29 @@ def update_bigquery_user_location_and_district(user_id, lat, lng, district):
         logging.error(f"Erreur update_bigquery_user_location_and_district: {e}")
         raise
 
+def delete_last_bigquery_event(user_id):
+    """Supprime le dernier événement (MAX timestamp) d'un utilisateur."""
+    try:
+        query = f"""
+        DELETE FROM `{Config.BQ_EVENTS}`
+        WHERE user_id = @user_id
+          AND timestamp = (
+              SELECT MAX(timestamp)
+              FROM `{Config.BQ_EVENTS}`
+              WHERE user_id = @user_id
+          )
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+            ]
+        )
+        client.query(query, job_config=job_config).result()
+    except Exception as e:
+        logging.error(f"Erreur delete_last_bigquery_event: {e}")
+        raise
+
+
 def insert_bigquery_event(user_id, event_type):
     """Insère un nouvel événement."""
     try:
