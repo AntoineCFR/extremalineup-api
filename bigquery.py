@@ -234,8 +234,7 @@ def get_bigquery_users():
             last_lat,
             last_lng,
             last_location,
-            user_role,
-            photo_url
+            user_role
         FROM
             `{Config.BQ_USERS}`
         ORDER BY
@@ -253,7 +252,6 @@ def get_bigquery_users():
                 "last_lng": float(row["last_lng"]) if not pd.isna(row["last_lng"]) else None,
                 "last_location": str(row["last_location"]) if not pd.isna(row["last_location"]) else None,
                 "user_role": str(row["user_role"]) if not pd.isna(row["user_role"]) else "user",
-                "photo_url": str(row["photo_url"]) if not pd.isna(row["photo_url"]) else None,
             }
             users.append(user)
 
