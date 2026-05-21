@@ -440,14 +440,17 @@ def insert_bigquery_geoloc(user_id, lat, lng):
         table_ref = client.dataset(Config.BQ_DATASET).table('geoloc')
         row = {
             "user_id": user_id,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
+            # Format RFC 3339 avec 'Z' : seul format garanti accepté par BQ en streaming insert.
+            # isoformat() sans timezone peut être rejeté selon la version du client.
+            "timestamp": datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z',
             "lat": lat,
             "lon": lng,
         }
         errors = client.insert_rows_json(table_ref, [row])
         if errors:
             logging.error(f"Erreurs insert geoloc: {errors}")
-            raise Exception(f"Erreurs BigQuery: {errors}")
+            raise Exception(f"Erreurs BigQuery insert geoloc: {errors}")
+        logging.info(f"Geoloc insérée pour user {user_id}: lat={lat}, lon={lng}")
     except Exception as e:
         logging.error(f"Erreur insert_bigquery_geoloc: {e}")
         raise
