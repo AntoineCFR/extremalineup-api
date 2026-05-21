@@ -74,10 +74,12 @@ def get_bigquery_user_favorites(user_id=None):
 def toggle_bigquery_user_favorite(user_id, set_id):
     """
     Toggle isfavorite pour un couple (user_id, set_id).
-    Retourne la nouvelle valeur de isfavorite.
+    Utilise MERGE (UPSERT) : insère la ligne si elle n'existe pas encore,
+    sinon inverse isfavorite. Retourne la nouvelle valeur de isfavorite.
     """
     try:
-        query = f"""
+        # 1. Lire la valeur actuelle (None si la ligne n'existe pas)
+        select_query = f"""
         SELECT isfavorite
         FROM `{Config.BQ_USER_FAVORITES}`
         WHERE user_id = @user_id AND set_id = @set_id
@@ -88,23 +90,29 @@ def toggle_bigquery_user_favorite(user_id, set_id):
                 bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
             ]
         )
-        rows = list(client.query(query, job_config=job_config).result())
+        rows = list(client.query(select_query, job_config=job_config).result())
         current_value = rows[0].isfavorite if rows else False
         new_value = not current_value
 
-        update_query = f"""
-        UPDATE `{Config.BQ_USER_FAVORITES}`
-        SET isfavorite = @new_value
-        WHERE user_id = @user_id AND set_id = @set_id
+        # 2. MERGE : met à jour la ligne existante OU l'insère si absente
+        merge_query = f"""
+        MERGE `{Config.BQ_USER_FAVORITES}` AS target
+        USING (SELECT @user_id AS user_id, @set_id AS set_id) AS source
+        ON target.user_id = source.user_id AND target.set_id = source.set_id
+        WHEN MATCHED THEN
+            UPDATE SET isfavorite = @new_value
+        WHEN NOT MATCHED THEN
+            INSERT (user_id, set_id, isfavorite, notation)
+            VALUES (@user_id, @set_id, @new_value, NULL)
         """
-        update_job_config = bigquery.QueryJobConfig(
+        merge_job_config = bigquery.QueryJobConfig(
             query_parameters=[
-                bigquery.ScalarQueryParameter("new_value", "BOOL", new_value),
                 bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
-                bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+                bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+                bigquery.ScalarQueryParameter("new_value", "BOOL", new_value),
             ]
         )
-        client.query(update_query, job_config=update_job_config).result()
+        client.query(merge_query, job_config=merge_job_config).result()
         return new_value
     except Exception as e:
         logging.error(f"Erreur lors du toggle favori: {e}")
@@ -113,36 +121,48 @@ def toggle_bigquery_user_favorite(user_id, set_id):
 def update_bigquery_user_favorite_notation(user_id, set_id, notation):
     """
     Met à jour la notation pour un couple (user_id, set_id).
-    notation peut être None pour supprimer la note (→ SQL NULL).
+    Utilise MERGE (UPSERT) : insère la ligne si elle n'existe pas encore
+    (isfavorite = FALSE par défaut), sinon met à jour la notation uniquement.
+    notation peut être None pour remettre la note à NULL.
     """
     try:
         if notation is None:
-            # NULL ne peut pas être passé comme paramètre typé INT64 ; on l'écrit littéralement
-            query = f"""
-            UPDATE `{Config.BQ_USER_FAVORITES}`
-            SET notation = NULL
-            WHERE user_id = @user_id AND set_id = @set_id
+            # NULL ne peut pas être passé comme paramètre typé INT64
+            merge_query = f"""
+            MERGE `{Config.BQ_USER_FAVORITES}` AS target
+            USING (SELECT @user_id AS user_id, @set_id AS set_id) AS source
+            ON target.user_id = source.user_id AND target.set_id = source.set_id
+            WHEN MATCHED THEN
+                UPDATE SET notation = NULL
+            WHEN NOT MATCHED THEN
+                INSERT (user_id, set_id, isfavorite, notation)
+                VALUES (@user_id, @set_id, FALSE, NULL)
             """
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
                     bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
-                    bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+                    bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
                 ]
             )
         else:
-            query = f"""
-            UPDATE `{Config.BQ_USER_FAVORITES}`
-            SET notation = @notation
-            WHERE user_id = @user_id AND set_id = @set_id
+            merge_query = f"""
+            MERGE `{Config.BQ_USER_FAVORITES}` AS target
+            USING (SELECT @user_id AS user_id, @set_id AS set_id) AS source
+            ON target.user_id = source.user_id AND target.set_id = source.set_id
+            WHEN MATCHED THEN
+                UPDATE SET notation = @notation
+            WHEN NOT MATCHED THEN
+                INSERT (user_id, set_id, isfavorite, notation)
+                VALUES (@user_id, @set_id, FALSE, @notation)
             """
             job_config = bigquery.QueryJobConfig(
                 query_parameters=[
-                    bigquery.ScalarQueryParameter("notation", "INT64", notation),
                     bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
-                    bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+                    bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+                    bigquery.ScalarQueryParameter("notation", "INT64", notation),
                 ]
             )
-        client.query(query, job_config=job_config).result()
+        client.query(merge_query, job_config=job_config).result()
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour de la notation: {e}")
         raise
