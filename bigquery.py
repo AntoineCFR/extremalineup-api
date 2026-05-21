@@ -414,8 +414,8 @@ def get_district_from_coordinates(lat, lng):
         logging.error(f"Erreur get_district_from_coordinates: {e}")
         raise
 
-def insert_bigquery_geoloc(user_id, lat, lng, district=None):
-    """Insère une nouvelle entrée dans la table geoloc."""
+def insert_bigquery_geoloc(user_id, lat, lng):
+    """Insère une nouvelle entrée dans la table geoloc (user_id, timestamp, lat, lon)."""
     try:
         table_ref = client.dataset(Config.BQ_DATASET).table('geoloc')
         row = {
@@ -423,7 +423,6 @@ def insert_bigquery_geoloc(user_id, lat, lng, district=None):
             "timestamp": datetime.datetime.utcnow().isoformat(),
             "lat": lat,
             "lon": lng,
-            "district": district,
         }
         errors = client.insert_rows_json(table_ref, [row])
         if errors:
