@@ -21,7 +21,6 @@ def send_sos_notification(sender_user_id):
                 priority="high",
                 notification=messaging.AndroidNotification(
                     channel_id="sos_channel",   # canal haute-priorité + vibration longue
-                    notification_priority=messaging.AndroidNotificationPriority.PRIORITY_MAX,
                 ),
             ),
             apns=messaging.APNSConfig(
