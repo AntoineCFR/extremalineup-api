@@ -1,4 +1,4 @@
-dotenv
+python-dotenv
 google-auth-httplib2
 google-auth-oauthlib
 google-cloud-bigquery

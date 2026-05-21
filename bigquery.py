@@ -80,7 +80,7 @@ def toggle_bigquery_user_favorite(user_id, set_id):
         query = f"""
         SELECT isfavorite
         FROM `{Config.BQ_USER_FAVORITES}`
-        WHERE user_id = {user_id} AND set_id = {set_id}
+        WHERE user_id = @user_id AND set_id = @set_id
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -94,8 +94,8 @@ def toggle_bigquery_user_favorite(user_id, set_id):
 
         update_query = f"""
         UPDATE `{Config.BQ_USER_FAVORITES}`
-        SET isfavorite = {new_value}
-        WHERE user_id = {user_id} AND set_id = {set_id}
+        SET isfavorite = @new_value
+        WHERE user_id = @user_id AND set_id = @set_id
         """
         update_job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -113,21 +113,35 @@ def toggle_bigquery_user_favorite(user_id, set_id):
 def update_bigquery_user_favorite_notation(user_id, set_id, notation):
     """
     Met à jour la notation pour un couple (user_id, set_id).
-    notation peut être None pour supprimer la note.
+    notation peut être None pour supprimer la note (→ SQL NULL).
     """
     try:
-        query = f"""
-        UPDATE `{Config.BQ_USER_FAVORITES}`
-        SET notation = {notation}
-        WHERE user_id = {user_id} AND set_id = {set_id}
-        """
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=[
-                bigquery.ScalarQueryParameter("notation", "INT64", notation),
-                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
-                bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
-            ]
-        )
+        if notation is None:
+            # NULL ne peut pas être passé comme paramètre typé INT64 ; on l'écrit littéralement
+            query = f"""
+            UPDATE `{Config.BQ_USER_FAVORITES}`
+            SET notation = NULL
+            WHERE user_id = @user_id AND set_id = @set_id
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                    bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+                ]
+            )
+        else:
+            query = f"""
+            UPDATE `{Config.BQ_USER_FAVORITES}`
+            SET notation = @notation
+            WHERE user_id = @user_id AND set_id = @set_id
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("notation", "INT64", notation),
+                    bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                    bigquery.ScalarQueryParameter("set_id", "INT64", set_id)
+                ]
+            )
         client.query(query, job_config=job_config).result()
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour de la notation: {e}")
@@ -197,7 +211,7 @@ def get_bigquery_weather_forecast():
             wind_speed,
             festival_day
         FROM
-            `{Config.BQ_DATASET}.{Config.BQ_WEATHER_TABLE}`
+            `{Config.BQ_PROJECT}.{Config.BQ_DATASET}.{Config.BQ_WEATHER_TABLE}`
         WHERE
             festival_day IN ('friday', 'saturday', 'sunday')
         ORDER BY
@@ -402,7 +416,7 @@ def insert_bigquery_geoloc(user_id, lat, lng, district=None):
         table_ref = client.dataset(Config.BQ_DATASET).table('geoloc')
         row = {
             "user_id": user_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.datetime.utcnow().isoformat(),
             "lat": lat,
             "lon": lng,
             "district": district,
@@ -445,7 +459,7 @@ def insert_bigquery_event(user_id, event_type):
         table_ref = client.dataset(Config.BQ_DATASET).table('events')
         row = {
             "user_id": user_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.datetime.utcnow().isoformat(),
             "event_type": event_type,
         }
         errors = client.insert_rows_json(table_ref, [row])
@@ -486,6 +500,33 @@ def update_all_users_district():
         logging.info("District mis à jour pour tous les utilisateurs.")
     except Exception as e:
         logging.error(f"Erreur update_all_users_district: {e}")
+        raise
+
+def get_bigquery_user_events(user_id):
+    """Récupère les événements d'un utilisateur depuis BigQuery."""
+    try:
+        query = f"""
+        SELECT user_id, timestamp, event_type
+        FROM `{Config.BQ_EVENTS}`
+        WHERE user_id = @user_id
+        ORDER BY timestamp DESC
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id)
+            ]
+        )
+        rows = list(client.query(query, job_config=job_config).result())
+        return [
+            {
+                "user_id": int(row.user_id),
+                "timestamp": row.timestamp.isoformat() if hasattr(row.timestamp, 'isoformat') else str(row.timestamp),
+                "event_type": str(row.event_type)
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        logging.error(f"Erreur get_bigquery_user_events: {e}")
         raise
 
 def get_username_by_id(user_id):

@@ -22,10 +22,18 @@ from bigquery import (
     get_district_from_coordinates,
     update_bigquery_user_location_and_district,
     insert_bigquery_event,
-    update_all_users_district
+    update_all_users_district,
+    get_bigquery_user_events,
 )
 from config import Config
 from firebase_cloud_messaging import send_sos_notification
+import firebase_admin
+from firebase_admin import credentials as firebase_credentials
+
+# Initialisation du SDK Firebase Admin (nécessaire pour l'envoi des notifications SOS)
+if not firebase_admin._apps:
+    cred = firebase_credentials.Certificate(Config.GOOGLE_APPLICATION_CREDENTIALS)
+    firebase_admin.initialize_app(cred)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,7 +71,7 @@ def check_user():
 @app.route('/update-weather', methods=['POST'])
 def update_weather():
     try:
-        if datetime.now().date() > datetime(2026, 5, 24).date():
+        if datetime.now().date() > datetime(2026, 5, 25).date():
             return jsonify({"status": "success", "message": "Festival terminé. Aucune mise à jour nécessaire."}), 200
 
         params = {
@@ -378,11 +386,27 @@ def create_event():
         elif event_type_str == "sos":
             send_sos_notification(user_id_int)
 
-        return jsonify({"status": "success", "event_type": event_type_str}), 200
+        return jsonify({"status": "success", "event_type": event_type_str}), 201
     except ValueError:
         return jsonify({"error": "user_id must be an integer"}), 400
     except Exception as e:
         logger.error(f"Erreur /api/events: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/events', methods=['GET'])
+def get_events():
+    """Récupère les événements d'un utilisateur."""
+    user_id_param = request.args.get('user_id')
+    if not user_id_param:
+        return jsonify({"error": "user_id is required"}), 400
+    try:
+        user_id = int(user_id_param)
+        events = get_bigquery_user_events(user_id)
+        return jsonify(events), 200
+    except ValueError:
+        return jsonify({"error": "user_id must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"Erreur /api/events GET: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
