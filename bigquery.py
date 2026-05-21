@@ -480,7 +480,9 @@ def delete_last_bigquery_event(user_id):
 
 
 def insert_bigquery_event(user_id, event_type):
-    """Insère un nouvel événement."""
+    """Insère un nouvel événement via batch load (pas de streaming buffer).
+    Les lignes batch sont immédiatement disponibles pour les DML (DELETE/UPDATE),
+    contrairement aux streaming inserts qui bloquent le DML pendant ~90 min."""
     try:
         table_ref = client.dataset(Config.BQ_DATASET).table('events')
         row = {
@@ -488,10 +490,17 @@ def insert_bigquery_event(user_id, event_type):
             "timestamp": datetime.datetime.utcnow().isoformat(),
             "event_type": event_type,
         }
-        errors = client.insert_rows_json(table_ref, [row])
-        if errors:
-            logging.error(f"Erreurs insert event: {errors}")
-            raise Exception(f"Erreurs BigQuery: {errors}")
+        job_config = bigquery.LoadJobConfig(
+            write_disposition="WRITE_APPEND",
+            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            schema=[
+                bigquery.SchemaField("user_id", "INTEGER"),
+                bigquery.SchemaField("timestamp", "TIMESTAMP"),
+                bigquery.SchemaField("event_type", "STRING"),
+            ],
+        )
+        job = client.load_table_from_json([row], table_ref, job_config=job_config)
+        job.result()  # attend la fin du job avant de retourner
     except Exception as e:
         logging.error(f"Erreur insert_bigquery_event: {e}")
         raise
