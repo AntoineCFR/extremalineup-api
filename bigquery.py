@@ -224,7 +224,7 @@ def get_bigquery_weather_forecast():
         raise
 
 def get_bigquery_users():
-    """Récupère la liste de tous les utilisateurs avec username, phone_number, last_lat, last_lng."""
+    """Récupère la liste de tous les utilisateurs."""
     try:
         query = f"""
         SELECT
@@ -232,7 +232,10 @@ def get_bigquery_users():
             username,
             phone_number,
             last_lat,
-            last_lng
+            last_lng,
+            last_location,
+            user_role,
+            photo_url
         FROM
             `{Config.BQ_USERS}`
         ORDER BY
@@ -248,6 +251,9 @@ def get_bigquery_users():
                 "phone_number": str(row["phone_number"]) if not pd.isna(row["phone_number"]) else None,
                 "last_lat": float(row["last_lat"]) if not pd.isna(row["last_lat"]) else None,
                 "last_lng": float(row["last_lng"]) if not pd.isna(row["last_lng"]) else None,
+                "last_location": str(row["last_location"]) if not pd.isna(row["last_location"]) else None,
+                "user_role": str(row["user_role"]) if not pd.isna(row["user_role"]) else "user",
+                "photo_url": str(row["photo_url"]) if not pd.isna(row["photo_url"]) else None,
             }
             users.append(user)
 
