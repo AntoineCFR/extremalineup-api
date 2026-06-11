@@ -313,6 +313,10 @@ def get_bigquery_users(festival_id):
     """Récupère les utilisateurs présents sur un festival, avec leur position.
     Jointure users (global) × festival_users (état par festival)."""
     try:
+        # LEFT JOIN : on renvoie TOUS les utilisateurs (comptes globaux) ; la
+        # position (festival_users) est superposée si elle existe pour CE festival,
+        # sinon NULL. Un INNER JOIN masquerait les users sans position et viderait
+        # l'équipe d'un festival fraîchement ouvert.
         query = f"""
         SELECT
             u.id,
@@ -322,9 +326,9 @@ def get_bigquery_users(festival_id):
             fu.last_lng,
             fu.last_location,
             u.user_role
-        FROM `{Config.BQ_FESTIVAL_USERS}` fu
-        JOIN `{Config.BQ_USERS}` u ON u.id = fu.user_id
-        WHERE fu.festival_id = @festival_id
+        FROM `{Config.BQ_USERS}` u
+        LEFT JOIN `{Config.BQ_FESTIVAL_USERS}` fu
+          ON fu.user_id = u.id AND fu.festival_id = @festival_id
         ORDER BY u.username
         """
         job_config = bigquery.QueryJobConfig(
