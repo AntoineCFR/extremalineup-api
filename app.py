@@ -124,7 +124,10 @@ def get_timetable():
         offset = _festival_utc_offset(festival)
         df['start_time'] += offset
         df['end_time'] += offset
-        return jsonify(df.to_dict(orient='records'))
+        # Remplace les NaN (colonnes NULL en base, ex. bio) par None → JSON `null`
+        # valide. Sinon pandas/jsonify produit `NaN`, que Dart refuse de parser.
+        records = df.where(pd.notnull(df), None).to_dict(orient='records')
+        return jsonify(records)
     except Exception as e:
         logger.error(f"Erreur dans /timetable: {str(e)}")
         return jsonify({"error": str(e)}), 500

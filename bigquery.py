@@ -457,6 +457,8 @@ def get_bigquery_weather_forecast(festival_id):
             query_parameters=[bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
         )
         df = client.query(query, job_config=job_config).result().to_dataframe()
+        # NaN (colonnes NULL) -> None pour produire du JSON valide (`null`).
+        df = df.where(pd.notnull(df), None)
         return df.to_dict('records')
     except Exception as e:
         logging.error(f"Erreur lors de la récupération de la météo: {e}")
