@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas as pd
+import math
 from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
 import requests
@@ -74,6 +75,16 @@ def _festival_id_from_body(data):
     except (TypeError, ValueError):
         return None, "festival_id must be an integer"
 
+def _nan_to_none(records):
+    """Remplace les float NaN par None dans une liste de dicts → JSON `null` valide.
+    Robuste (contrairement à df.where) : agit après to_dict, donc insensible au
+    type des colonnes pandas (les colonnes tout-NULL en float64 sont bien gérées)."""
+    for rec in records:
+        for key, value in rec.items():
+            if isinstance(value, float) and math.isnan(value):
+                rec[key] = None
+    return records
+
 def _festival_utc_offset(festival):
     """Décalage UTC (timedelta) du festival, calculé à partir de son fuseau IANA.
     Remplace l'ancien +2h codé en dur."""
@@ -124,9 +135,9 @@ def get_timetable():
         offset = _festival_utc_offset(festival)
         df['start_time'] += offset
         df['end_time'] += offset
-        # Remplace les NaN (colonnes NULL en base, ex. bio) par None → JSON `null`
-        # valide. Sinon pandas/jsonify produit `NaN`, que Dart refuse de parser.
-        records = df.where(pd.notnull(df), None).to_dict(orient='records')
+        # Remplace les NaN (colonnes NULL en base) par None → JSON `null` valide.
+        # Sinon pandas/jsonify produit `NaN`, que Dart refuse de parser.
+        records = _nan_to_none(df.to_dict(orient='records'))
         return jsonify(records)
     except Exception as e:
         logger.error(f"Erreur dans /timetable: {str(e)}")
@@ -266,7 +277,7 @@ def get_weather():
     if err:
         return jsonify({"error": err}), 400
     try:
-        forecasts = get_bigquery_weather_forecast(festival_id)
+        forecasts = _nan_to_none(get_bigquery_weather_forecast(festival_id))
         for forecast in forecasts:
             if isinstance(forecast['date'], datetime):
                 forecast['date'] = forecast['date'].isoformat()
