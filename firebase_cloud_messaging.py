@@ -31,7 +31,8 @@ def send_sos_notification(sender_user_id):
             ),
             topic="all_users",
         )
-        messaging.send(message)
+        message_id = messaging.send(message)
+        logging.info(f"FCM envoyé (message_id={message_id})")
         logging.info(f"SOS notification envoyée pour l'utilisateur {sender_user_id}.")
     except Exception as e:
         logging.error(f"Erreur send_sos_notification: {str(e)}")
@@ -50,6 +51,9 @@ def send_perdu_notification(sender_user_id):
             data={
                 "event_type": "perdu",
                 "user_id": str(sender_user_id),
+                # Demande aux appareils actifs/ouverts de remonter leur position
+                # (l'app gère ça à la réception au premier plan ou au tap de la notif).
+                "request_location": "true",
             },
             android=messaging.AndroidConfig(
                 priority="high",
@@ -65,7 +69,8 @@ def send_perdu_notification(sender_user_id):
             ),
             topic="all_users",
         )
-        messaging.send(message)
+        message_id = messaging.send(message)
+        logging.info(f"FCM envoyé (message_id={message_id})")
         logging.info(f"Notification 'perdu' envoyée pour l'utilisateur {sender_user_id}.")
     except Exception as e:
         logging.error(f"Erreur send_perdu_notification: {str(e)}")
@@ -99,7 +104,8 @@ def send_hype_notification(sender_user_id):
             ),
             topic="all_users",
         )
-        messaging.send(message)
+        message_id = messaging.send(message)
+        logging.info(f"FCM envoyé (message_id={message_id})")
         logging.info(f"Notification 'hype' envoyée pour l'utilisateur {sender_user_id}.")
     except Exception as e:
         logging.error(f"Erreur send_hype_notification: {str(e)}")

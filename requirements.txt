@@ -9,3 +9,4 @@ gunicorn
 pandas
 db-dtypes
 firebase-admin==6.0.1
+tzdata

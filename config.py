@@ -15,27 +15,21 @@ class Config:
     # Clé API WeatherAPI
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
-    # Emplacement du festival
-    CITY = 'Houthalen-Helchteren'
-
     # Configuration BigQuery pour la météo
     BQ_WEATHER_TABLE = "weather"  # Nom de la table BigQuery
 
-    # Dictionnaire pour mapper les dates aux jours du festival
-    FESTIVAL_DAYS = {
-        "2026-05-22": "friday",
-        "2026-05-23": "saturday",
-        "2026-05-24": "sunday",
-    }
-
+    # NB : la ville, les dates et le fuseau horaire ne sont plus codés en dur.
+    # Ils proviennent désormais de la table `festivals` (voir get_festival()).
 
     # BigQuery
     BQ_PROJECT = "extremalineup"
     BQ_DATASET = "dataset"
+    BQ_FESTIVALS = f"{BQ_PROJECT}.{BQ_DATASET}.festivals"
+    BQ_FESTIVAL_USERS = f"{BQ_PROJECT}.{BQ_DATASET}.festival_users"
     BQ_TIMETABLE = f"{BQ_PROJECT}.{BQ_DATASET}.timetable"
     BQ_USER_FAVORITES = f"{BQ_PROJECT}.{BQ_DATASET}.user_favorites"
     BQ_USERS = f"{BQ_PROJECT}.{BQ_DATASET}.users"
-    BQ_DISTRICTS = f"{BQ_PROJECT}.{BQ_DATASET}.districts"
+    BQ_STAGES = f"{BQ_PROJECT}.{BQ_DATASET}.stages"  # ex-`districts`
     BQ_GEOLOC = f"{BQ_PROJECT}.{BQ_DATASET}.geoloc"
     BQ_EVENTS = f"{BQ_PROJECT}.{BQ_DATASET}.events"
 
