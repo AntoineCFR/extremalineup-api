@@ -12,6 +12,21 @@ class Config:
         f.write(credentials_json)
         GOOGLE_APPLICATION_CREDENTIALS = f.name
 
+    # --- Credential Firebase (FCM) ---
+    # L'app s'enregistre dans le projet Firebase `festcompanion`, distinct du
+    # projet BigQuery `extremalineup`. Firebase Admin DOIT donc utiliser un
+    # compte de service de `festcompanion`, sinon les push partent dans le vide.
+    firebase_credentials_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+    if firebase_credentials_json:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as ff:
+            ff.write(firebase_credentials_json)
+            FIREBASE_CREDENTIALS = ff.name
+    else:
+        # Repli : réutilise le SA BigQuery. ⚠️ Les push ne fonctionneront que si
+        # ce compte appartient AU MÊME projet que l'app — sinon, définir
+        # FIREBASE_CREDENTIALS_JSON (Render → Environment Variables).
+        FIREBASE_CREDENTIALS = GOOGLE_APPLICATION_CREDENTIALS
+
     # Clé API WeatherAPI
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 

@@ -38,9 +38,11 @@ from firebase_cloud_messaging import (
 import firebase_admin
 from firebase_admin import credentials as firebase_credentials
 
-# Initialisation du SDK Firebase Admin (nécessaire pour l'envoi des notifications SOS)
+# Initialisation du SDK Firebase Admin (envoi des notifications push).
+# Utilise le credential Firebase (projet `festcompanion`), distinct du SA
+# BigQuery, sinon les push n'atteignent aucun appareil.
 if not firebase_admin._apps:
-    cred = firebase_credentials.Certificate(Config.GOOGLE_APPLICATION_CREDENTIALS)
+    cred = firebase_credentials.Certificate(Config.FIREBASE_CREDENTIALS)
     firebase_admin.initialize_app(cred)
 
 logging.basicConfig(level=logging.INFO)
