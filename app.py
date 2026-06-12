@@ -213,7 +213,9 @@ def update_user_location(user_id):
 
 # ========== MÉTÉO ==========
 
-@app.route('/update-weather', methods=['POST'])
+# GET autorisé en plus de POST : permet de déclencher la MAJ depuis un simple
+# cron (cron-job.org…) ou le navigateur, sans avoir à forger une requête POST.
+@app.route('/update-weather', methods=['POST', 'GET'])
 def update_weather():
     """Met à jour la météo de tous les festivals à venir / en cours.
     La ville et les dates proviennent de la table `festivals`."""

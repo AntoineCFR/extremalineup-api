@@ -29,6 +29,7 @@ def _festival_row_to_dict(row):
         "end_date": row.end_date.isoformat() if row.end_date is not None else None,
         "timezone": str(row.timezone) if row.timezone is not None else None,
         "is_active": bool(row.is_active) if row.is_active is not None else False,
+        "parking": str(row.parking) if row.parking is not None else None,
     }
 
 def get_bigquery_festivals(active_only=True):
@@ -36,7 +37,7 @@ def get_bigquery_festivals(active_only=True):
     try:
         where = "WHERE is_active = TRUE" if active_only else ""
         query = f"""
-        SELECT festival_id, slug, name, city, country, start_date, end_date, timezone, is_active
+        SELECT festival_id, slug, name, city, country, start_date, end_date, timezone, is_active, parking
         FROM `{Config.BQ_FESTIVALS}`
         {where}
         ORDER BY start_date DESC
@@ -51,7 +52,7 @@ def get_bigquery_festival(festival_id):
     """Récupère un festival par son id. Retourne None si introuvable."""
     try:
         query = f"""
-        SELECT festival_id, slug, name, city, country, start_date, end_date, timezone, is_active
+        SELECT festival_id, slug, name, city, country, start_date, end_date, timezone, is_active, parking
         FROM `{Config.BQ_FESTIVALS}`
         WHERE festival_id = @festival_id
         """
