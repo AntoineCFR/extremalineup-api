@@ -561,7 +561,7 @@ def create_event():
             elif event_type_str == "sos":
                 send_sos_notification(user_id_int)
             elif event_type_str == "hype":
-                send_hype_notification(user_id_int)
+                send_hype_notification(user_id_int, festival_id)
         except Exception as notif_err:
             logger.error(f"Notification push échouée (événement '{event_type_str}' créé malgré tout): {notif_err}")
 

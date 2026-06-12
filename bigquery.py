@@ -421,6 +421,59 @@ def get_username_by_id(user_id):
         logging.error(f"Erreur get_username_by_id: {str(e)}")
         return "Utilisateur inconnu"
 
+def get_user_current_stage(festival_id, user_id):
+    """Scène courante d'un utilisateur sur un festival (last_location de
+    festival_users). Retourne None si inconnue ('?' ou vide). Best-effort."""
+    try:
+        query = f"""
+        SELECT last_location
+        FROM `{Config.BQ_FESTIVAL_USERS}`
+        WHERE festival_id = @festival_id AND user_id = @user_id
+        LIMIT 1
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+        ])
+        rows = list(client.query(query, job_config=job_config).result())
+        if not rows:
+            return None
+        loc = rows[0].last_location
+        if loc is None or str(loc).strip() in ("", "?"):
+            return None
+        return str(loc)
+    except Exception as e:
+        logging.error(f"Erreur get_user_current_stage: {e}")
+        return None
+
+def get_now_playing_dj(festival_id, stage):
+    """DJ jouant actuellement sur une scène (timetable). Best-effort → None si
+    rien/erreur. Les heures sont stockées en UTC ; on compare à l'instant UTC.
+    TIMESTAMP(...) rend la comparaison robuste que la colonne soit DATETIME ou
+    TIMESTAMP."""
+    try:
+        if not stage:
+            return None
+        query = f"""
+        SELECT dj
+        FROM `{Config.BQ_TIMETABLE}`
+        WHERE festival_id = @festival_id
+          AND stage = @stage
+          AND TIMESTAMP(start_time) <= CURRENT_TIMESTAMP()
+          AND TIMESTAMP(end_time) > CURRENT_TIMESTAMP()
+        ORDER BY start_time DESC
+        LIMIT 1
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("stage", "STRING", stage),
+        ])
+        rows = list(client.query(query, job_config=job_config).result())
+        return str(rows[0].dj) if rows else None
+    except Exception as e:
+        logging.error(f"Erreur get_now_playing_dj: {e}")
+        return None
+
 
 # ============================================================================
 # ÉTAT PAR FESTIVAL (festival_users : géoloc + district courant par festival)

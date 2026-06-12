@@ -1,6 +1,10 @@
 import logging
 from firebase_admin import messaging
-from bigquery import get_username_by_id
+from bigquery import (
+    get_username_by_id,
+    get_user_current_stage,
+    get_now_playing_dj,
+)
 
 
 def send_sos_notification(sender_user_id):
@@ -77,19 +81,36 @@ def send_perdu_notification(sender_user_id):
         raise
 
 
-def send_hype_notification(sender_user_id):
-    """Envoie une notification 'hype' à tous les utilisateurs."""
+def send_hype_notification(sender_user_id, festival_id=None):
+    """Envoie une notification 'hype' à tous les utilisateurs.
+    Enrichit le message avec la SCÈNE de l'auteur (et le DJ qui y joue) si
+    disponibles, pour que les autres sachent d'où vient la hype."""
     try:
         sender_username = get_username_by_id(sender_user_id)
+
+        # Scène courante de l'auteur + DJ en train de jouer (best-effort).
+        stage = get_user_current_stage(festival_id, sender_user_id) if festival_id else None
+        dj = get_now_playing_dj(festival_id, stage) if (festival_id and stage) else None
+
+        if stage and dj:
+            body = f"{sender_username} kiffe sur {stage} — {dj} en train de jouer ! 🎵"
+        elif stage:
+            body = f"{sender_username} kiffe sur {stage} ! 🎵"
+        else:
+            body = f"{sender_username} : c'est incroyable ici ! 🎵"
+
+        data = {"event_type": "hype", "user_id": str(sender_user_id)}
+        if stage:
+            data["stage"] = stage
+        if dj:
+            data["dj"] = dj
+
         message = messaging.Message(
             notification=messaging.Notification(
                 title="🔥 HYPE ! 🔥",
-                body=f"{sender_username} : c'est incroyable ici ! 🎵",
+                body=body,
             ),
-            data={
-                "event_type": "hype",
-                "user_id": str(sender_user_id),
-            },
+            data=data,
             android=messaging.AndroidConfig(
                 priority="normal",
                 notification=messaging.AndroidNotification(
