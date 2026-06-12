@@ -74,6 +74,15 @@ Every data endpoint **requires** a `festival_id` (query param on `GET`, body fie
 | `POST` | `/api/user-favorites/toggle` | Toggle `isfavorite` for `(festival_id, user_id, set_id)` — **UPSERT** |
 | `POST` | `/api/user-favorites/rate` | Set/clear a `notation` for `(festival_id, user_id, set_id)` — **UPSERT** |
 
+### DJ tags
+Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/ratings). Any user can add a tag; everyone sees them, each rendered with its author's avatar. A tag is normalized server-side (no spaces, no leading `#`, lowercased); identity is `(festival_id, user_id, set_id, tag)`.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/dj-tags?festival_id=[&set_id=]` | Tags for one set, or for the whole festival |
+| `POST` | `/api/dj-tags` | Add a tag (`festival_id, user_id, set_id, tag` in body) — idempotent **UPSERT**, returns the normalized `tag` |
+| `DELETE` | `/api/dj-tags` | Remove one's own tag (`festival_id, user_id, set_id, tag` in body) |
+
 ### Stages & geolocation
 | Method | Endpoint | Description |
 |---|---|---|
@@ -157,11 +166,13 @@ gunicorn app:app
 ### Database migration
 Apply `migrations/001_multi_festival.sql` in the BigQuery console to create the `festivals` / `festival_users` tables, add `festival_id` columns, backfill existing data, and rename `districts → stages` (`district → stage`, `stage → host`).
 
+Apply `migrations/005_dj_tags.sql` to create the `dj_tags` table (collaborative tags on sets).
+
 ---
 
 ## Notes
 
-- The BigQuery dataset/table layout is configured in `config.py` (`festivals`, `festival_users`, `timetable`, `users`, `user_favorites`, `stages`, `geoloc`, `events`, `weather`).
+- The BigQuery dataset/table layout is configured in `config.py` (`festivals`, `festival_users`, `timetable`, `users`, `user_favorites`, `dj_tags`, `stages`, `geoloc`, `events`, `weather`).
 - Festival days, city and timezone are no longer hard-coded — they come from the `festivals` table.
 - Push notifications currently use a single global `all_users` topic. Per-festival topics are a planned improvement.
 - CORS is open for the mobile client.

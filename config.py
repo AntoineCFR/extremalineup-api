@@ -43,6 +43,7 @@ class Config:
     BQ_FESTIVAL_USERS = f"{BQ_PROJECT}.{BQ_DATASET}.festival_users"
     BQ_TIMETABLE = f"{BQ_PROJECT}.{BQ_DATASET}.timetable"
     BQ_USER_FAVORITES = f"{BQ_PROJECT}.{BQ_DATASET}.user_favorites"
+    BQ_DJ_TAGS = f"{BQ_PROJECT}.{BQ_DATASET}.dj_tags"  # tags collaboratifs sur les sets
     BQ_USERS = f"{BQ_PROJECT}.{BQ_DATASET}.users"
     BQ_STAGES = f"{BQ_PROJECT}.{BQ_DATASET}.stages"  # ex-`districts`
     BQ_GEOLOC = f"{BQ_PROJECT}.{BQ_DATASET}.geoloc"

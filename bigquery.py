@@ -247,6 +247,122 @@ def update_bigquery_user_favorite_notation(festival_id, user_id, set_id, notatio
 
 
 # ============================================================================
+# TAGS DJ (collaboratifs, rattachés au set_id comme les favoris/notes)
+# ============================================================================
+
+def normalize_tag(raw):
+    """Normalise un tag : sans espace, sans « # » de tête, minuscule.
+    Règle partagée avec le frontend (Dart `DjTag.normalize`). Retourne '' si
+    le tag est vide après nettoyage (l'appelant rejette alors la requête)."""
+    if raw is None:
+        return ""
+    tag = str(raw).strip()
+    if tag.startswith("#"):
+        tag = tag[1:]
+    # Supprime tous les caractères d'espacement (espaces, tabs, sauts de ligne).
+    tag = "".join(tag.split())
+    return tag.lower()
+
+
+def get_bigquery_dj_tags(festival_id, set_id=None):
+    """Récupère les tags d'un festival.
+    - set_id fourni : tags de CE set → [{"user_id", "set_id", "tag"}, ...]
+    - set_id None  : TOUS les tags du festival (alimente le cache + la page
+      « DJ par tag ») → [{"user_id", "set_id", "tag"}, ...]
+    """
+    try:
+        if set_id is not None:
+            query = f"""
+            SELECT user_id, set_id, tag
+            FROM `{Config.BQ_DJ_TAGS}`
+            WHERE festival_id = @festival_id AND set_id = @set_id
+            ORDER BY tag, user_id
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+                    bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+                ]
+            )
+        else:
+            query = f"""
+            SELECT user_id, set_id, tag
+            FROM `{Config.BQ_DJ_TAGS}`
+            WHERE festival_id = @festival_id
+            ORDER BY tag, set_id, user_id
+            """
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
+            )
+        rows = client.query(query, job_config=job_config).result()
+        return [
+            {"user_id": int(row.user_id), "set_id": int(row.set_id), "tag": str(row.tag)}
+            for row in rows
+        ]
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération des tags: {e}")
+        raise
+
+
+def add_bigquery_dj_tag(festival_id, user_id, set_id, tag):
+    """Ajoute un tag (festival_id, user_id, set_id, tag). MERGE → idempotent :
+    un même utilisateur ne crée pas de doublon sur le même set. DML (pas de
+    streaming) → la ligne est immédiatement supprimable."""
+    try:
+        merge_query = f"""
+        MERGE `{Config.BQ_DJ_TAGS}` AS target
+        USING (
+            SELECT @festival_id AS festival_id, @user_id AS user_id,
+                   @set_id AS set_id, @tag AS tag
+        ) AS source
+        ON target.festival_id = source.festival_id
+           AND target.user_id = source.user_id
+           AND target.set_id = source.set_id
+           AND target.tag = source.tag
+        WHEN NOT MATCHED THEN
+            INSERT (festival_id, user_id, set_id, tag)
+            VALUES (@festival_id, @user_id, @set_id, @tag)
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+                bigquery.ScalarQueryParameter("tag", "STRING", tag),
+            ]
+        )
+        client.query(merge_query, job_config=job_config).result()
+    except Exception as e:
+        logging.error(f"Erreur lors de l'ajout du tag: {e}")
+        raise
+
+
+def delete_bigquery_dj_tag(festival_id, user_id, set_id, tag):
+    """Supprime le tag d'un utilisateur sur un set. Le user_id dans le WHERE
+    garantit qu'on ne supprime QUE son propre tag."""
+    try:
+        query = f"""
+        DELETE FROM `{Config.BQ_DJ_TAGS}`
+        WHERE festival_id = @festival_id
+          AND user_id = @user_id
+          AND set_id = @set_id
+          AND tag = @tag
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+                bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+                bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+                bigquery.ScalarQueryParameter("tag", "STRING", tag),
+            ]
+        )
+        client.query(query, job_config=job_config).result()
+    except Exception as e:
+        logging.error(f"Erreur lors de la suppression du tag: {e}")
+        raise
+
+
+# ============================================================================
 # UTILISATEURS (comptes globaux, partagés entre festivals)
 # ============================================================================
 

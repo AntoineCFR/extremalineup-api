@@ -13,6 +13,10 @@ from bigquery import (
     get_bigquery_user_favorites,
     toggle_bigquery_user_favorite,
     update_bigquery_user_favorite_notation,
+    normalize_tag,
+    get_bigquery_dj_tags,
+    add_bigquery_dj_tag,
+    delete_bigquery_dj_tag,
     get_bigquery_user_id,
     store_bigquery_weather_forecast,
     get_bigquery_weather_forecast,
@@ -356,6 +360,80 @@ def rate_favorite():
         return jsonify({"error": "user_id and set_id must be integers, notation must be integer or null"}), 400
     except Exception as e:
         logger.error(f"Erreur dans /api/user-favorites/rate: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ========== TAGS DJ ==========
+
+@app.route('/api/dj-tags', methods=['GET'])
+def get_dj_tags():
+    """Tags d'un festival.
+    - avec set_id : tags de CE set → [{user_id, set_id, tag}, ...]
+    - sans set_id : tous les tags du festival (cache + page « DJ par tag »).
+    """
+    festival_id, err = _festival_id_from_args()
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        set_id_param = request.args.get('set_id')
+        set_id = int(set_id_param) if set_id_param else None
+        tags = get_bigquery_dj_tags(festival_id, set_id)
+        return jsonify({"tags": tags}), 200
+    except ValueError:
+        return jsonify({"error": "set_id must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"Erreur dans /api/dj-tags: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/dj-tags', methods=['POST'])
+def add_dj_tag():
+    """Ajoute un tag. Body: {"festival_id": 1, "user_id": 1, "set_id": 42, "tag": "techno"}.
+    Le tag est normalisé côté serveur (sans espace, sans #, minuscule)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    user_id = data.get('user_id')
+    set_id = data.get('set_id')
+    if user_id is None or set_id is None:
+        return jsonify({"error": "user_id and set_id are required"}), 400
+    tag = normalize_tag(data.get('tag'))
+    if not tag:
+        return jsonify({"error": "tag is required"}), 400
+    try:
+        add_bigquery_dj_tag(festival_id, int(user_id), int(set_id), tag)
+        return jsonify({"success": True, "tag": tag}), 201
+    except ValueError:
+        return jsonify({"error": "user_id and set_id must be integers"}), 400
+    except Exception as e:
+        logger.error(f"Erreur dans POST /api/dj-tags: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/dj-tags', methods=['DELETE'])
+def delete_dj_tag():
+    """Supprime SON propre tag. Body: {"festival_id": 1, "user_id": 1, "set_id": 42, "tag": "techno"}."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    user_id = data.get('user_id')
+    set_id = data.get('set_id')
+    if user_id is None or set_id is None:
+        return jsonify({"error": "user_id and set_id are required"}), 400
+    tag = normalize_tag(data.get('tag'))
+    if not tag:
+        return jsonify({"error": "tag is required"}), 400
+    try:
+        delete_bigquery_dj_tag(festival_id, int(user_id), int(set_id), tag)
+        return jsonify({"success": True}), 200
+    except ValueError:
+        return jsonify({"error": "user_id and set_id must be integers"}), 400
+    except Exception as e:
+        logger.error(f"Erreur dans DELETE /api/dj-tags: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
