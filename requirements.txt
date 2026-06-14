@@ -3,6 +3,7 @@ requests
 google-auth-httplib2
 google-auth-oauthlib
 google-cloud-bigquery
+google-cloud-bigquery-storage
 flask==3.0.0
 flask-cors==4.0.0
 gunicorn
