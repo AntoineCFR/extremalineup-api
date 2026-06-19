@@ -33,6 +33,7 @@ from bigquery import (
     delete_last_bigquery_event,
     update_all_users_stage,
     get_bigquery_user_events,
+    get_journal,
 )
 from config import Config
 from firebase_cloud_messaging import (
@@ -40,6 +41,7 @@ from firebase_cloud_messaging import (
     send_perdu_notification,
     send_hype_notification,
 )
+import push_schedule
 import firebase_admin
 from firebase_admin import credentials as firebase_credentials
 
@@ -606,6 +608,53 @@ def get_events():
         return jsonify({"error": "user_id must be an integer"}), 400
     except Exception as e:
         logger.error(f"Erreur /api/events GET: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ========== PUSHS PROGRAMMÉS / JOURNAL ==========
+
+# GET pour être déclenchable par un simple cron (cron-job.org). Idempotent :
+# l'anti-doublon (table notifications) garantit un seul envoi par créneau, même
+# si le cron tape plusieurs fois dans la même fenêtre. Festival_id OPTIONNEL :
+# sans lui, on traite tous les festivals actifs dans leur fenêtre (1 seul cron).
+@app.route('/api/push/tick', methods=['GET', 'POST'])
+def push_tick():
+    try:
+        raw = request.args.get('festival_id')
+        if raw:
+            festival = get_bigquery_festival(int(raw))
+            festivals = [festival] if festival else []
+        else:
+            festivals = get_bigquery_festivals(active_only=True)
+
+        results = []
+        for festival in festivals:
+            if not festival or not festival.get("timezone") or not festival.get("start_date"):
+                continue
+            try:
+                results.append(push_schedule.run_tick(festival))
+            except Exception as fe:
+                logger.error(f"Erreur tick festival {festival.get('festival_id')}: {fe}")
+                results.append({"status": "error", "festival_id": festival.get("festival_id"),
+                                "message": str(fe)})
+        return jsonify({"status": "success", "results": results}), 200
+    except ValueError:
+        return jsonify({"error": "festival_id must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"Erreur /api/push/tick: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/journal', methods=['GET'])
+def get_journal_route():
+    """Toutes les notifications programmées d'un festival (page Journal)."""
+    festival_id, err = _festival_id_from_args()
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        return jsonify({"journal": get_journal(festival_id)}), 200
+    except Exception as e:
+        logger.error(f"Erreur /api/journal: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

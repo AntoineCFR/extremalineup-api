@@ -7,6 +7,36 @@ from bigquery import (
 )
 
 
+def send_topic_notification(title, body, data=None, channel_id="festival_channel", priority="normal"):
+    """Envoi générique d'une notification au topic global `all_users`.
+    Utilisé par les pushs programmés (journal). Lève en cas d'échec (l'appelant
+    décide quoi en faire). Retourne le message_id."""
+    try:
+        payload_data = {"event_type": "journal"}
+        if data:
+            payload_data.update({k: str(v) for k, v in data.items()})
+        apns_priority = "10" if priority == "high" else "5"
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            data=payload_data,
+            android=messaging.AndroidConfig(
+                priority=priority,
+                notification=messaging.AndroidNotification(channel_id=channel_id),
+            ),
+            apns=messaging.APNSConfig(
+                headers={"apns-priority": apns_priority},
+                payload=messaging.APNSPayload(aps=messaging.Aps(sound="default", badge=1)),
+            ),
+            topic="all_users",
+        )
+        message_id = messaging.send(message)
+        logging.info(f"FCM journal envoyé (message_id={message_id}) : {title}")
+        return message_id
+    except Exception as e:
+        logging.error(f"Erreur send_topic_notification: {str(e)}")
+        raise
+
+
 def send_sos_notification(sender_user_id):
     """Envoie une alerte SOS à tous les utilisateurs.
     Utilise le canal 'sos_channel' (Android) configuré avec une vibration longue."""

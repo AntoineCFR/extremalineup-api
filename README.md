@@ -104,6 +104,12 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 | `GET` | `/weather?festival_id=` | Cached forecast for a festival's days |
 | `POST` | `/update-weather` | Refresh forecasts for all upcoming/ongoing festivals from WeatherAPI |
 
+### Scheduled pushes & Journal
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/push/tick[?festival_id=]` | Cron tick: sends any push due *now* (festival-local time) and logs it. Idempotent (dedup via `notifications.slot_key`). Without `festival_id`, processes all active festivals — one cron covers everything. |
+| `GET` | `/api/journal?festival_id=` | The festival's notification journal (newest first) — feeds the in-app Journal screen |
+
 ---
 
 ## How the interesting bits work
@@ -119,6 +125,10 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 
 - **Per-festival weather writes.** `/update-weather` no longer truncates the whole `weather` table (that would wipe other festivals). It deletes only the target festival's rows, then appends fresh ones tagged with `festival_id`.
 
+- **Countdown pushes before the festival.** Same tick/Journal pipeline handles "J-N" milestones (`COUNTDOWN_DAYS` in `push_schedule.py`: 30/21/14/10/7/5/3/2/1 days before `start_date`), each fired once at `COUNTDOWN_TIME` local. Because they only depend on the date, they're testable live well before the event.
+
+- **Scheduled pushes via a single "tick" cron.** Rather than dozens of cron entries (one per time slot), a single cron-job.org entry hits `/api/push/tick` every ~5 min. The schedule and message texts live in `push_schedule.py`; each tick reads the festival's **local** time (`zoneinfo`), figures which slots are due, computes the "winner" (most lost / biggest drinker / top-rated DJs of the day, etc.) from `events`/`user_favorites`, sends the FCM push to topic `all_users`, and logs it. The `notifications` table doubles as the **dedup guard** (`slot_key` unique per festival+date+slot) so re-ticks never double-send, and as the **Journal** source of truth. Missed slots (cron stalled) are journaled without a late push; the day-after run sends one wrap-up push plus `pushed=false` leaderboard rows. Texts are gender-aware via the `users.gender` column.
+
 - **Batch loads, not streaming, for events.** Event rows are written with **batch load jobs** rather than streaming inserts, because streamed rows are locked out of `DELETE`/`UPDATE` for ~90 min — which would break the "undo last event" endpoint.
 
 - **Credentials without files.** Google service-account credentials are read from an environment variable (`GOOGLE_APPLICATION_CREDENTIALS_JSON`) and materialized into a temp file at startup, so nothing sensitive is committed or baked into the image.
@@ -131,10 +141,13 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 extremalineup-api/
 ├── app.py                      # Flask app + all route handlers
 ├── bigquery.py                 # Data-access layer (every BQ query lives here)
-├── firebase_cloud_messaging.py # SOS / lost / hype push builders
+├── firebase_cloud_messaging.py # SOS / lost / hype + generic topic push builders
+├── push_schedule.py            # Scheduled pushes: daily schedule, texts, winner logic, palmarès
 ├── config.py                   # Env-driven config (BQ table refs, keys)
 ├── migrations/
-│   └── 001_multi_festival.sql  # Schema migration: festivals table, festival_id, festival_users, district→stage rename
+│   ├── 001_multi_festival.sql  # Schema migration: festivals table, festival_id, festival_users, district→stage rename
+│   ├── 005_dj_tags.sql         # Collaborative DJ tags
+│   └── 007_push_journal.sql    # users.gender + notifications (journal + push dedup)
 └── requirements.txt
 ```
 
@@ -167,6 +180,8 @@ gunicorn app:app
 Apply `migrations/001_multi_festival.sql` in the BigQuery console to create the `festivals` / `festival_users` tables, add `festival_id` columns, backfill existing data, and rename `districts → stages` (`district → stage`, `stage → host`).
 
 Apply `migrations/005_dj_tags.sql` to create the `dj_tags` table (collaborative tags on sets).
+
+Apply `migrations/007_push_journal.sql` to add `users.gender` (fill `'m'`/`'f'` per user by hand) and create the `notifications` table (scheduled-push journal + dedup). Then set up **one** cron-job.org entry calling `GET /api/push/tick` every ~5 min.
 
 ---
 

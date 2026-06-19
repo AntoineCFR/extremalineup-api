@@ -48,6 +48,7 @@ class Config:
     BQ_STAGES = f"{BQ_PROJECT}.{BQ_DATASET}.stages"  # ex-`districts`
     BQ_GEOLOC = f"{BQ_PROJECT}.{BQ_DATASET}.geoloc"
     BQ_EVENTS = f"{BQ_PROJECT}.{BQ_DATASET}.events"
+    BQ_NOTIFICATIONS = f"{BQ_PROJECT}.{BQ_DATASET}.notifications"  # journal + anti-doublon des pushs programmés
 
     # Flask
     FLASK_PORT = 5000

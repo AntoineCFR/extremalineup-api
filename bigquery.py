@@ -855,3 +855,276 @@ def get_bigquery_user_events(festival_id, user_id):
     except Exception as e:
         logging.error(f"Erreur get_bigquery_user_events: {e}")
         raise
+
+
+# ============================================================================
+# PUSHS PROGRAMMÉS / JOURNAL
+# ============================================================================
+# Helpers servant à calculer les « gagnant·e·s » des notifications quotidiennes
+# (cf. push_schedule.py) puis à journaliser/dédupliquer les envois.
+
+def get_user_gender(user_id):
+    """Genre d'un utilisateur : 'm' (il), 'f' (elle) ou None (inconnu).
+    Best-effort → None si colonne absente / valeur vide / erreur."""
+    try:
+        query = f"SELECT gender FROM `{Config.BQ_USERS}` WHERE id = @user_id"
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("user_id", "INT64", user_id)]
+        )
+        rows = list(client.query(query, job_config=job_config).result())
+        if not rows:
+            return None
+        g = rows[0].gender
+        if g is None:
+            return None
+        g = str(g).strip().lower()
+        return g if g in ("m", "f") else None
+    except Exception as e:
+        logging.error(f"Erreur get_user_gender: {e}")
+        return None
+
+
+def get_event_counts(festival_id, start_utc, end_utc):
+    """Nombre d'events par (utilisateur, type) sur une fenêtre temporelle UTC.
+    Les timestamps sont stockés en UTC → on passe des bornes UTC (datetime aware).
+    Retourne [{"user_id", "event_type", "n"}, ...]."""
+    try:
+        query = f"""
+        SELECT user_id, event_type, COUNT(*) AS n
+        FROM `{Config.BQ_EVENTS}`
+        WHERE festival_id = @festival_id
+          AND timestamp >= @start_utc
+          AND timestamp < @end_utc
+        GROUP BY user_id, event_type
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("start_utc", "TIMESTAMP", start_utc),
+            bigquery.ScalarQueryParameter("end_utc", "TIMESTAMP", end_utc),
+        ])
+        rows = client.query(query, job_config=job_config).result()
+        return [
+            {"user_id": int(r.user_id), "event_type": str(r.event_type), "n": int(r.n)}
+            for r in rows
+        ]
+    except Exception as e:
+        logging.error(f"Erreur get_event_counts: {e}")
+        raise
+
+
+def get_rating_count_by_user(festival_id, day=None):
+    """Nombre de sets NOTÉS par utilisateur. Si `day` (ex. 'saturday') est fourni,
+    on restreint aux sets programmés ce jour-là (même filtre que les Tendances).
+    Retourne [{"user_id", "n"}, ...] trié décroissant."""
+    return _count_favorites_by_user(festival_id, day, notation_only=True)
+
+
+def get_favorite_count_by_user(festival_id, day=None):
+    """Nombre de sets MIS EN FAVORI par utilisateur, optionnellement filtré au jour.
+    Retourne [{"user_id", "n"}, ...] trié décroissant."""
+    return _count_favorites_by_user(festival_id, day, notation_only=False)
+
+
+def _count_favorites_by_user(festival_id, day, notation_only):
+    try:
+        condition = "uf.notation IS NOT NULL" if notation_only else "uf.isfavorite = TRUE"
+        day_join = ""
+        params = [bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
+        if day is not None:
+            # On rattache au set pour filtrer par jour de programmation.
+            day_join = f"""
+              JOIN `{Config.BQ_TIMETABLE}` t
+                ON t.set_id = uf.set_id AND t.festival_id = @festival_id
+            """
+            condition += " AND LOWER(t.day) = @day"
+            params.append(bigquery.ScalarQueryParameter("day", "STRING", day.lower()))
+        query = f"""
+        SELECT uf.user_id AS user_id, COUNT(*) AS n
+        FROM `{Config.BQ_USER_FAVORITES}` uf
+        {day_join}
+        WHERE uf.festival_id = @festival_id AND {condition}
+        GROUP BY uf.user_id
+        ORDER BY n DESC
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        rows = client.query(query, job_config=job_config).result()
+        return [{"user_id": int(r.user_id), "n": int(r.n)} for r in rows]
+    except Exception as e:
+        logging.error(f"Erreur _count_favorites_by_user: {e}")
+        raise
+
+
+def get_user_top_fav_stage(festival_id, user_id, day=None):
+    """Scène la plus représentée parmi les favoris d'un utilisateur (optionnellement
+    pour un jour donné). Sert au gag « X traîne au bar de <scène> ». None si aucun
+    favori."""
+    try:
+        params = [
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+        ]
+        day_filter = ""
+        if day is not None:
+            day_filter = "AND LOWER(t.day) = @day"
+            params.append(bigquery.ScalarQueryParameter("day", "STRING", day.lower()))
+        query = f"""
+        SELECT t.stage AS stage, COUNT(*) AS n
+        FROM `{Config.BQ_USER_FAVORITES}` uf
+        JOIN `{Config.BQ_TIMETABLE}` t
+          ON t.set_id = uf.set_id AND t.festival_id = @festival_id
+        WHERE uf.festival_id = @festival_id
+          AND uf.user_id = @user_id
+          AND uf.isfavorite = TRUE
+          {day_filter}
+        GROUP BY t.stage
+        ORDER BY n DESC
+        LIMIT 1
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        rows = list(client.query(query, job_config=job_config).result())
+        return str(rows[0].stage) if rows and rows[0].stage is not None else None
+    except Exception as e:
+        logging.error(f"Erreur get_user_top_fav_stage: {e}")
+        return None
+
+
+def get_main_stage(festival_id):
+    """Scène principale du festival = première dans le stage_order (repli alpha).
+    Sert de repli quand un utilisateur n'a aucun favori."""
+    try:
+        query = f"""
+        SELECT stage
+        FROM `{Config.BQ_TIMETABLE}`
+        WHERE festival_id = @festival_id AND stage IS NOT NULL
+        GROUP BY stage, stage_order
+        ORDER BY stage_order IS NULL, stage_order, LOWER(stage)
+        LIMIT 1
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
+        )
+        rows = list(client.query(query, job_config=job_config).result())
+        return str(rows[0].stage) if rows else None
+    except Exception as e:
+        logging.error(f"Erreur get_main_stage: {e}")
+        return None
+
+
+def get_trending_djs(festival_id, day=None, limit=3):
+    """DJs en tête du classement bayésien (même formule que le front : confidence
+    C=3, prior = moyenne globale de toutes les notes du festival). Filtré au jour
+    si `day` est fourni. Retourne une liste de noms de DJ (au plus `limit`)."""
+    try:
+        params = [
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("C", "FLOAT64", 3.0),
+            bigquery.ScalarQueryParameter("lim", "INT64", limit),
+        ]
+        day_filter = ""
+        if day is not None:
+            day_filter = "AND LOWER(t.day) = @day"
+            params.append(bigquery.ScalarQueryParameter("day", "STRING", day.lower()))
+        query = f"""
+        WITH ratings AS (
+          SELECT set_id, notation
+          FROM `{Config.BQ_USER_FAVORITES}`
+          WHERE festival_id = @festival_id AND notation IS NOT NULL
+        ),
+        gm AS (SELECT AVG(notation) AS m FROM ratings),
+        per_set AS (
+          SELECT set_id, COUNT(*) AS n, SUM(notation) AS s, AVG(notation) AS avg
+          FROM ratings GROUP BY set_id
+        )
+        SELECT t.dj AS dj,
+               (@C * gm.m + ps.s) / (@C + ps.n) AS bayes,
+               ps.n AS n, ps.avg AS avg
+        FROM per_set ps
+        JOIN `{Config.BQ_TIMETABLE}` t
+          ON t.set_id = ps.set_id AND t.festival_id = @festival_id
+        CROSS JOIN gm
+        WHERE TRUE {day_filter}
+        ORDER BY bayes DESC, n DESC, avg DESC, LOWER(t.dj)
+        LIMIT @lim
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=params)
+        rows = client.query(query, job_config=job_config).result()
+        return [str(r.dj) for r in rows if r.dj is not None]
+    except Exception as e:
+        logging.error(f"Erreur get_trending_djs: {e}")
+        return []
+
+
+def notification_exists(festival_id, slot_key):
+    """True si une notification a déjà été générée pour ce créneau (anti-doublon)."""
+    try:
+        query = f"""
+        SELECT COUNT(*) AS c
+        FROM `{Config.BQ_NOTIFICATIONS}`
+        WHERE festival_id = @festival_id AND slot_key = @slot_key
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("slot_key", "STRING", slot_key),
+        ])
+        rows = list(client.query(query, job_config=job_config).result())
+        return rows[0].c > 0
+    except Exception as e:
+        logging.error(f"Erreur notification_exists: {e}")
+        # En cas d'erreur, on renvoie True pour NE PAS risquer un envoi en double.
+        return True
+
+
+def insert_notification(festival_id, slot_key, day, scheduled_local, theme, title, body, pushed):
+    """Journalise une notification (DML INSERT → immédiatement requêtable pour le
+    dédoublonnage, contrairement au streaming)."""
+    try:
+        query = f"""
+        INSERT INTO `{Config.BQ_NOTIFICATIONS}`
+          (festival_id, slot_key, day, scheduled_local, theme, title, body, pushed)
+        VALUES (@festival_id, @slot_key, @day, @scheduled_local, @theme, @title, @body, @pushed)
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("slot_key", "STRING", slot_key),
+            bigquery.ScalarQueryParameter("day", "STRING", day),
+            bigquery.ScalarQueryParameter("scheduled_local", "STRING", scheduled_local),
+            bigquery.ScalarQueryParameter("theme", "STRING", theme),
+            bigquery.ScalarQueryParameter("title", "STRING", title),
+            bigquery.ScalarQueryParameter("body", "STRING", body),
+            bigquery.ScalarQueryParameter("pushed", "BOOL", pushed),
+        ])
+        client.query(query, job_config=job_config).result()
+    except Exception as e:
+        logging.error(f"Erreur insert_notification: {e}")
+        raise
+
+
+def get_journal(festival_id):
+    """Toutes les notifications d'un festival, les plus récentes d'abord (page Journal)."""
+    try:
+        query = f"""
+        SELECT slot_key, day, scheduled_local, theme, title, body, pushed, created_at
+        FROM `{Config.BQ_NOTIFICATIONS}`
+        WHERE festival_id = @festival_id
+        ORDER BY created_at DESC
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
+        )
+        rows = client.query(query, job_config=job_config).result()
+        return [
+            {
+                "slot_key": str(r.slot_key),
+                "day": str(r.day) if r.day is not None else None,
+                "scheduled_local": str(r.scheduled_local) if r.scheduled_local is not None else None,
+                "theme": str(r.theme) if r.theme is not None else None,
+                "title": str(r.title),
+                "body": str(r.body),
+                "pushed": bool(r.pushed) if r.pushed is not None else False,
+                "created_at": r.created_at.isoformat() if hasattr(r.created_at, "isoformat") else str(r.created_at),
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logging.error(f"Erreur get_journal: {e}")
+        raise
