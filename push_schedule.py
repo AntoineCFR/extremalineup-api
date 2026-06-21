@@ -163,17 +163,17 @@ def _trending_text(ordinal, day_name, djs):
     title = _trending_title(day_name)
     spotlight = _join_djs(djs)
     if not spotlight:
-        return title, ("Le classement se réveille — notez vos sets pour voir les "
-                       "coups de cœur du groupe apparaître ici ! 🎧")
+        return title, ("Le classement dort encore 😴 Notez vos sets pour réveiller "
+                       "les coups de cœur du groupe ! 🎧")
     if ordinal <= 0:
-        body = (f"Premier jour, premières basses. In the spotlight today : "
-                f"{spotlight}. Hydratez-vous, ça va secouer ! 💧")
+        body = (f"Premier jour, premières basses 🔊 Aujourd'hui sous les projecteurs : "
+                f"{spotlight}. Échauffez les nuques (et les gourdes 💧).")
     elif ordinal == 1:
-        body = (f"On remet ça ! Les coups de cœur du groupe pour aujourd'hui : "
-                f"{spotlight}. Réveil en douceur, journée en feu. 🔥")
+        body = (f"On remet ça, et plus fort ⚡ Les chouchous du groupe aujourd'hui : "
+                f"{spotlight}. Réveil tout en douceur, journée tout en feu. 🔥")
     else:
-        body = (f"Dernier round, on lâche rien. In the spotlight today : "
-                f"{spotlight}. Profitez de chaque set. ✨")
+        body = (f"Dernier round, zéro regret 🌞 À l'affiche aujourd'hui : "
+                f"{spotlight}. Donnez tout — la récup', c'est un problème de lundi.")
     return title, body
 
 
@@ -365,34 +365,34 @@ def _countdown_text(festival, days_until):
     title = f"J-{days_until} ⏳"
 
     if days_until == 30:
-        body = (f"Plus qu'un mois avant {name}{here} ! 🎶 C'est le moment d'écouter "
-                f"et de noter le line-up dans l'appli.")
+        body = (f"Un mois. UN. 🎶 {name} pointe le bout de son nez — l'heure de "
+                f"speed-dater le line-up dans l'appli.")
     elif days_until == 21:
-        body = (f"Trois semaines avant {name} ! 🗓️ Tu as commencé à noter tes sets ? "
-                f"Le classement Tendances n'attend que toi.")
+        body = ("3 semaines, le compte à rebours est lancé ⏱️ T'as noté tes sets, "
+                "ou tu improvises comme un sauvage ?")
     elif days_until == 14:
-        body = (f"J-14 ! 🎒 Deux semaines, on prépare la playlist. La météo de {name} "
-                f"s'ouvre bientôt dans l'appli.")
+        body = (f"La playlist chauffe 🎒 Deux semaines pour réviser tes classiques. "
+                f"(La météo de {name} débarque bientôt dans l'appli.)")
     elif days_until == 10:
-        body = (f"Plus que 10 jours ! 🔟 Affine tes favoris et ton planning, "
-                f"{name} approche.")
+        body = (f"Plus que 10 dodos 🔟 Affûte tes favoris, {name} arrive à grands pas.")
     elif days_until == 7:
         djs = bq.get_trending_djs(fid, day=None, limit=3)
-        spot = f" Coups de cœur du groupe pour l'instant : {_join_djs(djs)}." if djs else ""
-        body = (f"Une semaine, gang ! 🔥 Dernière ligne droite — coche tes "
-                f"incontournables sur le line-up.{spot}")
+        spot = f" Coups de cœur du groupe : {_join_djs(djs)}." if djs else ""
+        body = (f"UNE SEMAINE 🔥 Dernière ligne droite, coche tes incontournables "
+                f"sur le line-up.{spot}")
     elif days_until == 5:
-        body = (f"J-5 ! 🌡️ La météo de {name} s'affine dans l'appli. On y est presque.")
+        body = (f"La météo de {name} se précise dans l'appli 🌡️ — reste à prier le "
+                f"dieu de la techno pour le soleil.")
     elif days_until == 3:
-        body = (f"Plus que 3 dodos ! 🎉 Charge ton téléphone, repère les scènes, "
-                f"on se retrouve très bientôt.")
+        body = ("Plus que 3 dodos ! 🎉 Batterie externe ✅ scènes repérées ✅ "
+                "excuse pour poser ton vendredi ✅.")
     elif days_until == 2:
-        body = (f"48 h ! 🚐 Pense au covoit, au cash et aux bouchons d'oreilles. "
-                f"Et à l'appli, évidemment.")
+        body = ("48 h ⏰ Covoit, cash, bouchons d'oreilles… et zéro regret. "
+                "On y est presque.")
     else:  # 1
         djs = bq.get_trending_djs(fid, day=None, limit=3)
         spot = f" Le top du groupe : {_join_djs(djs)}." if djs else ""
-        body = (f"DEMAIN ! 🤩 Dernier check : favoris ✅ planning ✅ équipe ✅. "
+        body = (f"C'EST DEMAIN 🤩 Favoris ✅ planning ✅ équipe ✅ foie 🫣. "
                 f"Rendez-vous{here} !{spot}")
     return title, body
 
@@ -550,5 +550,5 @@ def _palmares_entries(festival, tz, start_window=True):
                         "body": f"{hype['name']} — merci pour l'énergie !"})
 
     entries.append({"key": "fin", "title": "💜 À l'année prochaine",
-                    "body": "Merci pour ce week-end, gang. On remet ça l'an prochain !"})
+                    "body": "Merci pour ce week-end, les p'tits potes. On remet ça l'an prochain !"})
     return entries
