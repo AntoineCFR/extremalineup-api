@@ -62,10 +62,11 @@ Every data endpoint **requires** a `festival_id` (query param on `GET`, body fie
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/timetable?festival_id=` | Full line-up, ordered by day/stage/time (times shifted to the festival's local TZ) |
-| `GET` | `/users?festival_id=` | Users present on a festival (id, username, phone, last location & stage, role) |
+| `GET` | `/users?festival_id=` | Users present on a festival (id, username, phone, last location & stage, tent location, role) |
 | `GET` | `/users/check?username=` | Resolve a username to its user id (global, no `festival_id`) |
 | `POST` | `/users/<id>/phone` | Update a user's phone number (global) |
 | `POST` | `/users/<id>/location` | Update a user's coordinates on a festival (`festival_id` in body) |
+| `POST` | `/users/<id>/tent` | Set a user's tent/camp location on a festival (`festival_id`, `lat`, `lng` in body) |
 
 ### Favorites & ratings
 | Method | Endpoint | Description |
@@ -122,12 +123,15 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 
 - **Event fan-out.** Creating an event writes to BigQuery and then triggers side effects by type:
   `sos` → high-priority push · `hype` → normal push · `lost` → re-resolve **every** user's stage on that festival (so the group can regroup) **then** push.
+  Each real-time push is also **journaled** into `notifications` (so it shows in the in-app Journal), but **only during the festival window** (`start_date ≤ festival-local date ≤ end_date`) — nothing before or after. `lost` is journaled under theme `lost` (reusing the Journal icon); `sos`/`hype` under their own theme.
+
+- **Hype message variety with no-repeat.** Real-time `hype` pushes pick from ~24 worded variants split across three tiers by available data: stage **+** now-playing DJ / stage only / neither (the author's name lives in the push *title*, so bodies stay fresh). Each variant has a stable key (`sd*`/`s*`/`p*`) stored in `notifications.variant`; the picker reads the cycle state from the journal (`count % P`) and won't reuse a variant until the whole tier has been shown once — robust across Render restarts/workers since the state is in BigQuery, not in memory.
 
 - **Per-festival weather writes.** `/update-weather` no longer truncates the whole `weather` table (that would wipe other festivals). It deletes only the target festival's rows, then appends fresh ones tagged with `festival_id`.
 
 - **Countdown pushes before the festival.** Same tick/Journal pipeline handles "J-N" milestones (`COUNTDOWN_DAYS` in `push_schedule.py`: 30/21/14/10/7/5/3/2/1 days before `start_date`), each fired once at `COUNTDOWN_TIME` local. Because they only depend on the date, they're testable live well before the event.
 
-- **Scheduled pushes via a single "tick" cron.** Rather than dozens of cron entries (one per time slot), a single cron-job.org entry hits `/api/push/tick` every ~5 min. The schedule and message texts live in `push_schedule.py`; each tick reads the festival's **local** time (`zoneinfo`), figures which slots are due, computes the "winner" (most lost / biggest drinker / top-rated DJs of the day, etc.) from `events`/`user_favorites`, sends the FCM push to topic `all_users`, and logs it. The `notifications` table doubles as the **dedup guard** (`slot_key` unique per festival+date+slot) so re-ticks never double-send, and as the **Journal** source of truth. Missed slots (cron stalled) are journaled without a late push; the day-after run sends one wrap-up push plus `pushed=false` leaderboard rows. Texts are gender-aware via the `users.gender` column.
+- **Scheduled pushes via a single "tick" cron.** Rather than dozens of cron entries (one per time slot), a single cron-job.org entry hits `/api/push/tick` every ~5 min. The schedule and message texts live in `push_schedule.py`; each tick reads the festival's **local** time (`zoneinfo`), figures which slots are due, computes the "winner" (most lost / biggest drinker / top-rated DJs of the day, etc.) from `events`/`user_favorites`, sends the FCM push to topic `all_users`, and logs it. The `notifications` table doubles as the **dedup guard** (`slot_key` unique per festival+date+slot) so re-ticks never double-send, and as the **Journal** source of truth — which also holds the real-time SOS/perdu/hype events (see *Event fan-out*), so the Journal mixes scheduled and live entries. Missed slots (cron stalled) are journaled without a late push; the day-after run sends one wrap-up push plus `pushed=false` leaderboard rows. Texts are gender-aware via the `users.gender` column.
 
 - **Batch loads, not streaming, for events.** Event rows are written with **batch load jobs** rather than streaming inserts, because streamed rows are locked out of `DELETE`/`UPDATE` for ~90 min — which would break the "undo last event" endpoint.
 
@@ -147,7 +151,9 @@ extremalineup-api/
 ├── migrations/
 │   ├── 001_multi_festival.sql  # Schema migration: festivals table, festival_id, festival_users, district→stage rename
 │   ├── 005_dj_tags.sql         # Collaborative DJ tags
-│   └── 007_push_journal.sql    # users.gender + notifications (journal + push dedup)
+│   ├── 007_push_journal.sql    # users.gender + notifications (journal + push dedup)
+│   ├── 008_journal_realtime_events.sql  # notifications.variant (real-time events journal + hype dedup)
+│   └── 009_user_tent.sql       # festival_users.tent_lat/tent_lng (per-festival camp location)
 └── requirements.txt
 ```
 
@@ -182,6 +188,10 @@ Apply `migrations/001_multi_festival.sql` in the BigQuery console to create the 
 Apply `migrations/005_dj_tags.sql` to create the `dj_tags` table (collaborative tags on sets).
 
 Apply `migrations/007_push_journal.sql` to add `users.gender` (fill `'m'`/`'f'` per user by hand) and create the `notifications` table (scheduled-push journal + dedup). Then set up **one** cron-job.org entry calling `GET /api/push/tick` every ~5 min.
+
+Apply `migrations/008_journal_realtime_events.sql` to add `notifications.variant` (real-time SOS/perdu/hype journaling during the festival window + hype variant no-repeat). Required before deploying the change, otherwise the journaling `INSERT` fails.
+
+Apply `migrations/009_user_tent.sql` to add `festival_users.tent_lat` / `tent_lng` (a user's tent/camp location per festival, set via `POST /users/<id>/tent` and read back in `/users`). Required before deploying, otherwise the tent upsert/read fails.
 
 ---
 

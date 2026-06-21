@@ -23,6 +23,7 @@ from bigquery import (
     get_bigquery_users,
     update_bigquery_user_phone,
     update_bigquery_user_location,
+    update_bigquery_user_tent,
     get_bigquery_stage,
     get_bigquery_stages,
     update_bigquery_stage,
@@ -34,6 +35,7 @@ from bigquery import (
     update_all_users_stage,
     get_bigquery_user_events,
     get_journal,
+    insert_notification,
 )
 from config import Config
 from firebase_cloud_messaging import (
@@ -214,6 +216,27 @@ def update_user_location(user_id):
         return jsonify({"status": "success", "message": "Localisation mise à jour."}), 200
     except Exception as e:
         logger.error(f"Erreur dans /users/{user_id}/location: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/users/<int:user_id>/tent', methods=['POST'])
+def update_user_tent(user_id):
+    """Enregistre l'emplacement de la tente (campement) d'un utilisateur sur un
+    festival donné. Distinct de la position courante."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    lat = data.get('lat')
+    lng = data.get('lng')
+    if lat is None or lng is None:
+        return jsonify({"error": "lat and lng are required"}), 400
+    try:
+        update_bigquery_user_tent(festival_id, user_id, lat, lng)
+        return jsonify({"status": "success", "message": "Emplacement de la tente mis à jour."}), 200
+    except Exception as e:
+        logger.error(f"Erreur dans /users/{user_id}/tent: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -532,6 +555,38 @@ def update_geoloc():
 
 # ========== ÉVÉNEMENTS ==========
 
+def _festival_is_ongoing(festival):
+    """True si la date LOCALE du festival est dans [start_date, end_date] inclus.
+    Sert à ne journaliser les événements temps réel que pendant le festival
+    (ni avant, ni après)."""
+    try:
+        if not festival or not festival.get("start_date") or not festival.get("end_date"):
+            return False
+        tz = ZoneInfo(festival["timezone"]) if festival.get("timezone") else ZoneInfo("UTC")
+        today_local = datetime.now(tz).date()
+        start = date.fromisoformat(festival["start_date"])
+        end = date.fromisoformat(festival["end_date"])
+        return start <= today_local <= end
+    except Exception as e:
+        logger.error(f"Erreur _festival_is_ongoing: {e}")
+        return False
+
+
+def _journal_realtime_event(festival_id, user_id, theme, title, body, variant=None):
+    """Journalise un événement temps réel (SOS/perdu/hype) dans `notifications`
+    pour qu'il apparaisse dans l'écran Journal. `slot_key` unique par déclenchement
+    (pas de dédoublonnage voulu, contrairement aux créneaux programmés).
+    Best-effort : ne doit jamais casser la création de l'événement."""
+    try:
+        slot_key = f"rt|{theme}|{user_id}|{datetime.utcnow().isoformat()}"
+        insert_notification(
+            festival_id, slot_key, day=None, scheduled_local=None,
+            theme=theme, title=title, body=body, pushed=True, variant=variant,
+        )
+    except Exception as e:
+        logger.error(f"Journalisation événement temps réel échouée ({theme}): {e}")
+
+
 @app.route('/api/events', methods=['POST'])
 def create_event():
     """Crée un événement. Body: {"festival_id": 1, "user_id": 1, "event_type": "sos"}"""
@@ -555,15 +610,25 @@ def create_event():
         if event_type_str == "perdu":
             update_all_users_stage(festival_id)
 
-        # Les notifications push ne doivent JAMAIS faire échouer la création de
-        # l'événement (l'event est déjà persisté). On loggue l'erreur et on continue.
+        # Les notifications push (et leur journalisation) ne doivent JAMAIS faire
+        # échouer la création de l'événement (déjà persisté). On loggue et on
+        # continue. La journalisation n'a lieu que PENDANT le festival ; le thème
+        # 'perdu' est journalisé en 'lost' (icône Journal existante côté app).
         try:
+            festival = get_bigquery_festival(festival_id)
+            ongoing = _festival_is_ongoing(festival)
             if event_type_str == "perdu":
-                send_perdu_notification(user_id_int)
+                title, body = send_perdu_notification(user_id_int)
+                if ongoing:
+                    _journal_realtime_event(festival_id, user_id_int, "lost", title, body)
             elif event_type_str == "sos":
-                send_sos_notification(user_id_int)
+                title, body = send_sos_notification(user_id_int)
+                if ongoing:
+                    _journal_realtime_event(festival_id, user_id_int, "sos", title, body)
             elif event_type_str == "hype":
-                send_hype_notification(user_id_int, festival_id)
+                title, body, variant_key = send_hype_notification(user_id_int, festival_id)
+                if ongoing:
+                    _journal_realtime_event(festival_id, user_id_int, "hype", title, body, variant_key)
         except Exception as notif_err:
             logger.error(f"Notification push échouée (événement '{event_type_str}' créé malgré tout): {notif_err}")
 

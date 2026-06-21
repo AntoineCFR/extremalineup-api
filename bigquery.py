@@ -495,6 +495,8 @@ def get_bigquery_users(festival_id):
             fu.last_lat,
             fu.last_lng,
             fu.last_location,
+            fu.tent_lat,
+            fu.tent_lng,
             u.user_role
         FROM `{Config.BQ_USERS}` u
         LEFT JOIN `{Config.BQ_FESTIVAL_USERS}` fu
@@ -515,6 +517,8 @@ def get_bigquery_users(festival_id):
                 "last_lat": float(row["last_lat"]) if not pd.isna(row["last_lat"]) else None,
                 "last_lng": float(row["last_lng"]) if not pd.isna(row["last_lng"]) else None,
                 "last_location": str(row["last_location"]) if not pd.isna(row["last_location"]) else None,
+                "tent_lat": float(row["tent_lat"]) if not pd.isna(row["tent_lat"]) else None,
+                "tent_lng": float(row["tent_lng"]) if not pd.isna(row["tent_lng"]) else None,
                 "user_role": str(row["user_role"]) if not pd.isna(row["user_role"]) else "user",
             })
         return users
@@ -552,6 +556,32 @@ def upsert_bigquery_festival_user(festival_id, user_id, lat, lng, stage):
 def update_bigquery_user_location(festival_id, user_id, lat, lng):
     """Met à jour uniquement les coordonnées d'un utilisateur sur un festival."""
     upsert_bigquery_festival_user(festival_id, user_id, lat, lng, None)
+
+def update_bigquery_user_tent(festival_id, user_id, lat, lng):
+    """Enregistre l'emplacement de la tente (campement) d'un utilisateur sur un
+    festival. N'écrit QUE tent_lat/tent_lng (laisse la position courante
+    intacte). MERGE → idempotent (insère la ligne festival_users si absente)."""
+    try:
+        merge_query = f"""
+        MERGE `{Config.BQ_FESTIVAL_USERS}` AS target
+        USING (SELECT @festival_id AS festival_id, @user_id AS user_id) AS source
+        ON target.festival_id = source.festival_id AND target.user_id = source.user_id
+        WHEN MATCHED THEN
+            UPDATE SET tent_lat = @lat, tent_lng = @lng
+        WHEN NOT MATCHED THEN
+            INSERT (festival_id, user_id, tent_lat, tent_lng)
+            VALUES (@festival_id, @user_id, @lat, @lng)
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("user_id", "INT64", user_id),
+            bigquery.ScalarQueryParameter("lat", "FLOAT64", lat),
+            bigquery.ScalarQueryParameter("lng", "FLOAT64", lng),
+        ])
+        client.query(merge_query, job_config=job_config).result()
+    except Exception as e:
+        logging.error(f"Erreur update_bigquery_user_tent: {e}")
+        raise
 
 def update_all_users_stage(festival_id):
     """Recalcule last_location (scène) pour TOUS les utilisateurs d'un festival
@@ -1074,14 +1104,16 @@ def notification_exists(festival_id, slot_key):
         return True
 
 
-def insert_notification(festival_id, slot_key, day, scheduled_local, theme, title, body, pushed):
+def insert_notification(festival_id, slot_key, day, scheduled_local, theme, title, body, pushed, variant=None):
     """Journalise une notification (DML INSERT → immédiatement requêtable pour le
-    dédoublonnage, contrairement au streaming)."""
+    dédoublonnage, contrairement au streaming).
+    `variant` identifie la formule d'un événement temps réel (dédup hype) ; NULL
+    pour les pushs programmés."""
     try:
         query = f"""
         INSERT INTO `{Config.BQ_NOTIFICATIONS}`
-          (festival_id, slot_key, day, scheduled_local, theme, title, body, pushed)
-        VALUES (@festival_id, @slot_key, @day, @scheduled_local, @theme, @title, @body, @pushed)
+          (festival_id, slot_key, day, scheduled_local, theme, title, body, pushed, variant)
+        VALUES (@festival_id, @slot_key, @day, @scheduled_local, @theme, @title, @body, @pushed, @variant)
         """
         job_config = bigquery.QueryJobConfig(query_parameters=[
             bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
@@ -1092,11 +1124,48 @@ def insert_notification(festival_id, slot_key, day, scheduled_local, theme, titl
             bigquery.ScalarQueryParameter("title", "STRING", title),
             bigquery.ScalarQueryParameter("body", "STRING", body),
             bigquery.ScalarQueryParameter("pushed", "BOOL", pushed),
+            bigquery.ScalarQueryParameter("variant", "STRING", variant),
         ])
         client.query(query, job_config=job_config).result()
     except Exception as e:
         logging.error(f"Erreur insert_notification: {e}")
         raise
+
+
+def get_hype_variant_cycle_state(festival_id, pool_keys):
+    """État du cycle de dédup 'hype' pour un palier : retourne
+    (count, recent_keys) où `count` est le nombre total de variantes de ce palier
+    déjà journalisées pour le festival, et `recent_keys` les plus récentes d'abord
+    (limitées à la taille du palier). L'appelant en déduit la position dans le
+    cycle (`count % P`) et les clés déjà utilisées dans le cycle courant.
+    Best-effort → (0, []) si rien/erreur (choix aléatoire ; l'envoi ne doit jamais
+    échouer ici)."""
+    try:
+        if not pool_keys:
+            return 0, []
+        query = f"""
+        SELECT variant, COUNT(*) OVER() AS total
+        FROM `{Config.BQ_NOTIFICATIONS}`
+        WHERE festival_id = @festival_id
+          AND theme = 'hype'
+          AND variant IN UNNEST(@pool_keys)
+        ORDER BY created_at DESC
+        LIMIT @limit
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ArrayQueryParameter("pool_keys", "STRING", list(pool_keys)),
+            bigquery.ScalarQueryParameter("limit", "INT64", len(pool_keys)),
+        ])
+        rows = list(client.query(query, job_config=job_config).result())
+        if not rows:
+            return 0, []
+        count = int(rows[0].total)
+        recent_keys = [str(r.variant) for r in rows]
+        return count, recent_keys
+    except Exception as e:
+        logging.error(f"Erreur get_hype_variant_cycle_state: {e}")
+        return 0, []
 
 
 def get_journal(festival_id):
