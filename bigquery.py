@@ -475,6 +475,29 @@ def get_now_playing_dj(festival_id, stage):
         return None
 
 
+def get_first_set_start_utc(festival_id, day):
+    """Heure de début (UTC, tz-aware) du TOUT PREMIER set d'un jour donné (nom de
+    jour anglais minuscule, ex. 'friday'). None si aucun set/erreur. Sert à
+    programmer le rappel « tente » 30 min avant le premier set."""
+    try:
+        query = f"""
+        SELECT MIN(TIMESTAMP(start_time)) AS first_start
+        FROM `{Config.BQ_TIMETABLE}`
+        WHERE festival_id = @festival_id AND LOWER(day) = LOWER(@day)
+        """
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+            bigquery.ScalarQueryParameter("day", "STRING", day),
+        ])
+        rows = list(client.query(query, job_config=job_config).result())
+        if not rows or rows[0].first_start is None:
+            return None
+        return rows[0].first_start
+    except Exception as e:
+        logging.error(f"Erreur get_first_set_start_utc: {e}")
+        return None
+
+
 # ============================================================================
 # ÉTAT PAR FESTIVAL (festival_users : géoloc + district courant par festival)
 # ============================================================================

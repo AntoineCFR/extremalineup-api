@@ -41,6 +41,23 @@ CLOSING_TIME = "10:00"  # heure locale de la notif de clôture (lendemain du fes
 COUNTDOWN_TIME = "09:00"
 COUNTDOWN_DAYS = [30, 21, 14, 10, 7, 5, 3, 2, 1]
 
+# ── Rappels « tente » & « localisation » ──────────────────────────────────────
+# Tente : le 1er jour, N minutes AVANT le premier set (heure dérivée de la
+# timetable). One-shot.
+TENT_REMINDER_LEAD_MIN = 30
+
+# Localisation : amorce la veille (J-1) puis rappels gradués le 1er jour (heures
+# locales), avec un argument croissant à chaque fois (se repérer → optimiser les
+# notifs → être retrouvé si perdu → sécurité/SOS). Diffusion à tous (le serveur
+# ne sait pas qui partage déjà → formulations inclusives).
+LOCATION_PREDAY_TIME = "19:00"
+LOCATION_REMINDERS_DAY0 = [
+    ("08:30", "stages"),
+    ("11:30", "notifs"),
+    ("14:30", "lost"),
+    ("17:30", "safety"),
+]
+
 # ── Planning (heures locales du festival) ─────────────────────────────────────
 # variant 'd' = texte du Trending choisi selon l'ordinal du jour.
 SCHEDULE_FIRST = [  # 1er jour : pas de « veille » → seulement Trending / FOMO / Juré
@@ -345,10 +362,21 @@ def run_tick(festival):
             res = _maybe_fire_slot(festival, tz, now_local, today, ordinal, slot)
             if res:
                 fired.append(res)
+        # Rappels du 1er jour : tente (30 min avant le 1er set) + localisation.
+        if ordinal == 0:
+            res = _maybe_fire_tent_reminder(festival, tz, now_local, today)
+            if res:
+                fired.append(res)
+            fired.extend(
+                _maybe_fire_location_reminders(festival, tz, now_local, today))
     elif today == end + timedelta(days=1):
         fired.extend(_maybe_fire_closing(festival, tz, now_local, today, n_days))
     elif today < start:
         fired.extend(_maybe_fire_countdown(festival, tz, now_local, today, start))
+        # Amorce localisation la veille (J-1).
+        res = _maybe_fire_location_preday(festival, tz, now_local, today, start)
+        if res:
+            fired.append(res)
     else:
         return {"status": "idle", "reason": "hors période festival"}
 
@@ -500,6 +528,113 @@ def _maybe_fire_closing(festival, tz, now_local, today, n_days):
         fired.append({"slot_key": key, "pushed": False})
 
     return fired
+
+
+# ── Rappels « tente » & « localisation » ──────────────────────────────────────
+
+def _tent_reminder_text():
+    title = "Bien installé·e ? 🏕️"
+    body = ("Avant que ça démarre : enregistre la position de ta tente (Mon "
+            "compte). Le toi de 4h du mat', boussole en panne, te remerciera "
+            "pour le guidage retour.")
+    return title, body
+
+
+def _location_preday_text():
+    title = "Demain, on y est ! 📍"
+    body = ("Pense à activer le partage de position (Mon compte) — on t'explique "
+            "pourquoi dès demain.")
+    return title, body
+
+
+# Rappels gradués du 1er jour : un argument croissant à chaque créneau.
+_LOCATION_TEXTS = {
+    "stages": (
+        "Repère-toi en un coup d'œil 📍",
+        "Active le partage de position : l'appli te dit en temps réel sur quelle "
+        "scène tu es. Fini de deviner où tu as atterri.",
+    ),
+    "notifs": (
+        "Tes notifs, en mieux 🎯",
+        "Avec ta position activée, l'appli adapte ses rappels à la scène où tu te "
+        "trouves. Ça se passe dans Mon compte.",
+    ),
+    "lost": (
+        "Perdu dans la foule ? 🧭",
+        "Te déclarer « perdu » ne sert que si ta position est partagée — c'est ce "
+        "qui permet à ton groupe de te retrouver. 30 s dans Mon compte.",
+    ),
+    "safety": (
+        "La sécurité d'abord 🆘",
+        "En cas de SOS, une position partagée = des secours plus rapides vers toi. "
+        "Pas encore activé ? Mon compte → partage de position.",
+    ),
+}
+
+
+def _fire_reminder_slot(festival, tz, now_local, today, hhmm, slot_key, theme, text):
+    """Programme/envoie un rappel ponctuel à `hhmm` (heure locale), une seule
+    fois (dédup `slot_key`). Même garde-fou de rattrapage que les créneaux : un
+    rappel manqué de plus de CATCH_UP_MIN est journalisé sans push (pas de spam
+    tardif). Retourne un dict de résultat ou None."""
+    fid = festival["festival_id"]
+    if bq.notification_exists(fid, slot_key):
+        return None
+    hh, mm = (int(x) for x in hhmm.split(":"))
+    scheduled = datetime.combine(today, time(hh, mm), tzinfo=tz)
+    if now_local < scheduled:
+        return None
+
+    title, body = text
+    day_name = _weekday_name(today)
+    if (now_local - scheduled) > timedelta(minutes=CATCH_UP_MIN):
+        bq.insert_notification(fid, slot_key, day_name, hhmm, theme, title, body, False)
+        return {"slot_key": slot_key, "pushed": False, "late": True, "title": title}
+
+    try:
+        fcm.send_topic_notification(title, body, channel_id="festival_channel")
+    except Exception as e:
+        logger.error(f"Push rappel échouée ({slot_key}), retry au prochain tick: {e}")
+        return None
+    bq.insert_notification(fid, slot_key, day_name, hhmm, theme, title, body, True)
+    return {"slot_key": slot_key, "pushed": True, "title": title}
+
+
+def _maybe_fire_tent_reminder(festival, tz, now_local, today):
+    """1er jour : rappel d'enregistrer sa tente, 30 min avant le premier set.
+    L'heure est dérivée de la timetable ; sans set trouvé, on s'abstient."""
+    fid = festival["festival_id"]
+    first_utc = bq.get_first_set_start_utc(fid, _weekday_name(today))
+    if first_utc is None:
+        return None
+    scheduled = first_utc.astimezone(tz) - timedelta(minutes=TENT_REMINDER_LEAD_MIN)
+    return _fire_reminder_slot(
+        festival, tz, now_local, today, scheduled.strftime("%H:%M"),
+        slot_key=f"{today.isoformat()}|tent_reminder",
+        theme="tent", text=_tent_reminder_text())
+
+
+def _maybe_fire_location_reminders(festival, tz, now_local, today):
+    """1er jour : rappels de localisation gradués (cf. LOCATION_REMINDERS_DAY0)."""
+    fired = []
+    for hhmm, key in LOCATION_REMINDERS_DAY0:
+        res = _fire_reminder_slot(
+            festival, tz, now_local, today, hhmm,
+            slot_key=f"{today.isoformat()}|loc|{key}",
+            theme="location", text=_LOCATION_TEXTS[key])
+        if res:
+            fired.append(res)
+    return fired
+
+
+def _maybe_fire_location_preday(festival, tz, now_local, today, start):
+    """Veille du festival (J-1) : amorce localisation à LOCATION_PREDAY_TIME."""
+    if today != start - timedelta(days=1):
+        return None
+    return _fire_reminder_slot(
+        festival, tz, now_local, today, LOCATION_PREDAY_TIME,
+        slot_key=f"{today.isoformat()}|loc_preday",
+        theme="location", text=_location_preday_text())
 
 
 def _palmares_entries(festival, tz, start_window=True):
