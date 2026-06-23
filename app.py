@@ -42,6 +42,7 @@ from bigquery import (
     journal_lineup_changes,
     get_unpushed_programmation,
     mark_notification_pushed,
+    ensure_stages_exist,
     MassCancellationError,
 )
 from config import Config
@@ -803,13 +804,16 @@ def _refresh_one_festival(festival, force, dry_run=False):
         adapter.enrich_new_bios(festival, df, new_mask)
 
     applied = sync_timetable_festival(df, festival_id, dry_run=False, force=force)
+    # Scènes surprises : on s'assure que toute scène scrapée a sa ligne `stages`
+    # (additif, coords à 0 — ne touche jamais aux coordonnées déjà réglées).
+    new_stages = ensure_stages_exist(festival_id, df["stage"].dropna().unique().tolist())
     journaled = journal_lineup_changes(festival_id, applied, tz)
     pushed = _push_pending_programmation(festival_id)
 
     counts = {}
     for c in applied:
         counts[c["type"]] = counts.get(c["type"], 0) + 1
-    return {"festival_id": festival_id, "changes": counts,
+    return {"festival_id": festival_id, "changes": counts, "new_stages": new_stages,
             "journaled": journaled, "pushed": pushed}
 
 

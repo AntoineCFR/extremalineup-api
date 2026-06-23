@@ -451,6 +451,38 @@ def mark_notification_pushed(festival_id, slot_key):
     client.query(query, job_config=job_config).result()
 
 
+def ensure_stages_exist(festival_id, stage_names):
+    """Crée les scènes MANQUANTES d'un festival (additif, NON destructif) :
+    coordonnées initialisées à 0 (à régler ensuite dans l'app). Les scènes
+    existantes — et leurs coordonnées déjà réglées sur place — sont PRÉSERVÉES.
+    Permet à une scène surprise apparue au scrape d'avoir sa ligne `stages`
+    automatiquement. Retourne le nombre de scènes créées."""
+    q = f"SELECT stage FROM `{Config.BQ_STAGES}` WHERE festival_id = @festival_id"
+    jc = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
+    )
+    existing = {r.stage for r in client.query(q, job_config=jc).result()}
+    missing = [n for n in dict.fromkeys(stage_names) if n and n not in existing]
+    if not missing:
+        return 0
+    rows = [
+        {"stage": name, "festival_id": festival_id, **{c: 0.0 for c in _STAGE_COLS}}
+        for name in missing
+    ]
+    schema = (
+        [bigquery.SchemaField("stage", "STRING", mode="REQUIRED")]
+        + [bigquery.SchemaField(c, "FLOAT64") for c in _STAGE_COLS]
+        + [bigquery.SchemaField("festival_id", "INT64", mode="REQUIRED")]
+    )
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND",
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        schema=schema,
+    )
+    client.load_table_from_json(rows, Config.BQ_STAGES, job_config=job_config).result()
+    return len(missing)
+
+
 # ============================================================================
 # FAVORIS / NOTATIONS
 # ============================================================================
