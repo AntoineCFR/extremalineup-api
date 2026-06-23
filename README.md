@@ -111,6 +111,11 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 | `GET` | `/api/push/tick[?festival_id=]` | Cron tick: sends any push due *now* (festival-local time) and logs it. Idempotent (dedup via `notifications.slot_key`). Without `festival_id`, processes all active festivals — one cron covers everything. |
 | `GET` | `/api/journal?festival_id=` | The festival's notification journal (newest first) — feeds the in-app Journal screen |
 
+### Line-up refresh (admin)
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET`/`POST` | `/api/admin/refresh-lineup[?festival_id=][&dry_run=true][&force=true]` | Re-scrape a festival's line-up and **diff-sync** it into `timetable` (stable `set_id`), log every change to the Journal (`programmation` theme) and push one notification per change. **Mutates data → requires a secret in a header** (`Authorization: Bearer <ADMIN_REFRESH_TOKEN>` or `X-Admin-Token: <…>`; never in the URL). Without `festival_id`, processes all active, not-yet-ended festivals that have a scraper. `dry_run=true` returns the planned changes **without writing or pushing**. `force=true` bypasses the mass-cancellation guard. |
+
 ---
 
 ## How the interesting bits work
@@ -137,6 +142,8 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 
 - **Batch loads, not streaming, for events.** Event rows are written with **batch load jobs** rather than streaming inserts, because streamed rows are locked out of `DELETE`/`UPDATE` for ~90 min — which would break the "undo last event" endpoint.
 
+- **Diff-based line-up sync (stable `set_id`).** `/api/admin/refresh-lineup` re-scrapes a festival and reconciles it with `timetable` by **natural key** `(dj, stage, day)` (b2b-order- and case-insensitive). A set keeps its `set_id` when only its time changes (so favorites, ratings and tags — all keyed by `set_id` — stay attached); a brand-new set gets a fresh id; a set that disappears is **soft-deleted** (`active=FALSE`, `deactivated_at`), not erased, so it can be reactivated (same id) if it reappears. Bios are scraped only for genuinely new sets — existing artists are never re-fetched or overwritten. Every visible change is logged to the Journal (`programmation` theme) and pushed (one per change). A **mass-cancellation guard** refuses to apply if a run would deactivate more than half the active sets (empty/broken scrape) unless `force=true` — important since the endpoint is cron-driven with no human reviewing the plan.
+
 - **Credentials without files.** Google service-account credentials are read from an environment variable (`GOOGLE_APPLICATION_CREDENTIALS_JSON`) and materialized into a temp file at startup, so nothing sensitive is committed or baked into the image.
 
 ---
@@ -149,13 +156,17 @@ extremalineup-api/
 ├── bigquery.py                 # Data-access layer (every BQ query lives here)
 ├── firebase_cloud_messaging.py # SOS / lost / hype + generic topic push builders
 ├── push_schedule.py            # Scheduled pushes: daily schedule, texts, winner logic, palmarès
+├── scrapers/                   # Line-up scrapers, one adapter per festival
+│   ├── __init__.py             # SCRAPERS registry: festival_id → adapter
+│   └── awakenings.py           # Awakenings 2026 timetable + bios scraper
 ├── config.py                   # Env-driven config (BQ table refs, keys)
 ├── migrations/
 │   ├── 001_multi_festival.sql  # Schema migration: festivals table, festival_id, festival_users, district→stage rename
 │   ├── 005_dj_tags.sql         # Collaborative DJ tags
 │   ├── 007_push_journal.sql    # users.gender + notifications (journal + push dedup)
 │   ├── 008_journal_realtime_events.sql  # notifications.variant (real-time events journal + hype dedup)
-│   └── 009_user_tent.sql       # festival_users.tent_lat/tent_lng (per-festival camp location)
+│   ├── 009_user_tent.sql       # festival_users.tent_lat/tent_lng (per-festival camp location)
+│   └── 010_timetable_soft_delete.sql  # timetable.active/deactivated_at (stable set_id on re-scrape)
 └── requirements.txt
 ```
 
@@ -174,6 +185,7 @@ extremalineup-api/
 |---|---|
 | `GOOGLE_APPLICATION_CREDENTIALS_JSON` | Full service-account JSON (as a string) |
 | `WEATHER_API_KEY` | WeatherAPI key |
+| `ADMIN_REFRESH_TOKEN` | Shared secret guarding `POST/GET /api/admin/refresh-lineup` (line-up re-sync). Sent in a header only (`Authorization: Bearer …` or `X-Admin-Token: …`), compared in constant time. If unset, the endpoint refuses every request (fail-closed). |
 
 ### Run locally
 ```bash
@@ -194,6 +206,8 @@ Apply `migrations/007_push_journal.sql` to add `users.gender` (fill `'m'`/`'f'` 
 Apply `migrations/008_journal_realtime_events.sql` to add `notifications.variant` (real-time SOS/perdu/hype journaling during the festival window + hype variant no-repeat). Required before deploying the change, otherwise the journaling `INSERT` fails.
 
 Apply `migrations/009_user_tent.sql` to add `festival_users.tent_lat` / `tent_lng` (a user's tent/camp location per festival, set via `POST /users/<id>/tent` and read back in `/users`). Required before deploying, otherwise the tent upsert/read fails.
+
+Apply `migrations/010_timetable_soft_delete.sql` to add `timetable.active` / `deactivated_at`. This switches the scraper from "delete + reassign every set_id" (which orphaned favorites/tags/ratings) to a diff-based sync that keeps `set_id` stable: a set keeps its id when only its time changes, and a removed set is **deactivated** (kept for history, hidden from the app) rather than erased. **Required before deploying** — `/timetable` now filters on `active`, so the column must exist first.
 
 ---
 

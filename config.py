@@ -30,6 +30,12 @@ class Config:
     # Clé API WeatherAPI
     WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
+    # Secret protégeant l'endpoint de rafraîchissement du line-up (il MODIFIE la
+    # base). Transmis UNIQUEMENT par header : `Authorization: Bearer <token>` ou
+    # `X-Admin-Token: <token>` (jamais en query, pour ne pas fuiter en logs). Si
+    # non défini, l'endpoint refuse toute requête (fail-closed).
+    ADMIN_REFRESH_TOKEN = os.getenv("ADMIN_REFRESH_TOKEN")
+
     # Configuration BigQuery pour la météo
     BQ_WEATHER_TABLE = "weather"  # Nom de la table BigQuery
 

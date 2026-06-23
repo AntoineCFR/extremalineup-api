@@ -2,6 +2,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pandas as pd
 import math
+import hmac
 from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
 import requests
@@ -36,12 +37,20 @@ from bigquery import (
     get_bigquery_user_events,
     get_journal,
     insert_notification,
+    sync_timetable_festival,
+    select_new_sets,
+    journal_lineup_changes,
+    get_unpushed_programmation,
+    mark_notification_pushed,
+    MassCancellationError,
 )
 from config import Config
+from scrapers import SCRAPERS
 from firebase_cloud_messaging import (
     send_sos_notification,
     send_perdu_notification,
     send_hype_notification,
+    send_topic_notification,
 )
 import push_schedule
 import firebase_admin
@@ -720,6 +729,128 @@ def get_journal_route():
         return jsonify({"journal": get_journal(festival_id)}), 200
     except Exception as e:
         logger.error(f"Erreur /api/journal: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ========== ADMIN : RAFRAÎCHISSEMENT DU LINE-UP ==========
+
+def _admin_authorized(req):
+    """Vrai si la requête porte le bon secret admin. Secret transmis UNIQUEMENT
+    par header (jamais en query, pour ne pas fuiter en logs/historique) :
+      Authorization: Bearer <token>   ou   X-Admin-Token: <token>
+    Comparaison en temps constant (anti-timing). Fail-closed si le secret n'est
+    pas configuré côté serveur."""
+    expected = Config.ADMIN_REFRESH_TOKEN
+    if not expected:
+        return False
+    provided = req.headers.get('X-Admin-Token')
+    if not provided:
+        auth = req.headers.get('Authorization', '')
+        if auth.startswith('Bearer '):
+            provided = auth[len('Bearer '):].strip()
+    if not provided:
+        return False
+    return hmac.compare_digest(provided, expected)
+
+
+def _push_pending_programmation(festival_id):
+    """Pousse à `all_users` les changements de programmation pas encore poussés
+    (1 push par changement), puis les marque pushed=TRUE. Idempotent : une push
+    échouée repart au run suivant. Best-effort par entrée : un échec n'empêche
+    pas les autres."""
+    sent = 0
+    for n in get_unpushed_programmation(festival_id):
+        try:
+            send_topic_notification(n["title"], n["body"], data={"event_type": "programmation"})
+            mark_notification_pushed(festival_id, n["slot_key"])
+            sent += 1
+        except Exception as e:
+            logger.error(f"Push programmation échoué ({n['slot_key']}): {e}")
+    return sent
+
+
+def _refresh_one_festival(festival, force, dry_run=False):
+    """Scrape + diff (+ journal + push si pas dry_run) pour UN festival.
+    Retourne un récap. En dry_run : calcule le plan, n'écrit/ne pousse RIEN."""
+    festival_id = festival["festival_id"]
+    adapter = SCRAPERS.get(festival_id)
+    if adapter is None:
+        return {"festival_id": festival_id, "skipped": "pas d'adaptateur de scraping"}
+
+    # On ne rafraîchit jamais un festival terminé (sinon le site vide ferait tout
+    # passer en « annulé » — bloqué par le garde-fou, mais autant ne pas scraper).
+    today = datetime.now().date()
+    if festival.get("end_date") and date.fromisoformat(festival["end_date"]) < today:
+        return {"festival_id": festival_id, "skipped": "festival terminé"}
+
+    tz = ZoneInfo(festival["timezone"]) if festival.get("timezone") else ZoneInfo("UTC")
+
+    rows = adapter.scrape_rows(festival)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return {"festival_id": festival_id, "skipped": "aucun set scrapé"}
+
+    if dry_run:
+        plan = sync_timetable_festival(df, festival_id, dry_run=True)
+        counts = {}
+        for c in plan:
+            counts[c["type"]] = counts.get(c["type"], 0) + 1
+        return {"festival_id": festival_id, "dry_run": True, "changes": counts}
+
+    # Bios : uniquement pour les NOUVEAUX sets (jamais les artistes existants).
+    new_mask = select_new_sets(df, festival_id)
+    if bool(new_mask.any()):
+        adapter.enrich_new_bios(festival, df, new_mask)
+
+    applied = sync_timetable_festival(df, festival_id, dry_run=False, force=force)
+    journaled = journal_lineup_changes(festival_id, applied, tz)
+    pushed = _push_pending_programmation(festival_id)
+
+    counts = {}
+    for c in applied:
+        counts[c["type"]] = counts.get(c["type"], 0) + 1
+    return {"festival_id": festival_id, "changes": counts,
+            "journaled": journaled, "pushed": pushed}
+
+
+# GET et POST : déclenchable par cron-job.org (comme /update-weather, /push/tick).
+# ⚠️ MODIFIE la base → protégé par un secret (ADMIN_REFRESH_TOKEN). Sans
+# festival_id, traite tous les festivals actifs à venir/en cours qui ont un
+# adaptateur. ?force=true passe outre le garde-fou anti-désactivation massive.
+@app.route('/api/admin/refresh-lineup', methods=['GET', 'POST'])
+def refresh_lineup():
+    if not _admin_authorized(request):
+        return jsonify({"error": "unauthorized"}), 403
+
+    force = str(request.args.get('force', '')).lower() in ('1', 'true', 'yes')
+    dry_run = str(request.args.get('dry_run', '')).lower() in ('1', 'true', 'yes')
+    raw = request.args.get('festival_id')
+    try:
+        if raw:
+            festival = get_bigquery_festival(int(raw))
+            festivals = [festival] if festival else []
+        else:
+            festivals = get_bigquery_festivals(active_only=True)
+
+        results = []
+        for festival in festivals:
+            if not festival:
+                continue
+            fid = festival.get("festival_id")
+            try:
+                results.append(_refresh_one_festival(festival, force, dry_run))
+            except MassCancellationError as e:
+                logger.error(f"Garde-fou refresh festival {fid}: {e}")
+                results.append({"festival_id": fid, "error": "mass_cancellation_guard",
+                                "detail": str(e)})
+            except Exception as fe:
+                logger.error(f"Erreur refresh festival {fid}: {fe}")
+                results.append({"festival_id": fid, "error": str(fe)})
+        return jsonify({"status": "success", "results": results}), 200
+    except ValueError:
+        return jsonify({"error": "festival_id must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"Erreur /api/admin/refresh-lineup: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

@@ -1,5 +1,7 @@
 import logging
 import datetime
+import re
+from collections import defaultdict
 from google.cloud import bigquery
 from google.oauth2 import service_account
 import pandas as pd
@@ -74,18 +76,379 @@ def get_bigquery_timetable(festival_id):
     """Récupère la timetable d'un festival sous forme de DataFrame.
     Colonnes de scène : `stage` (lieu géolocalisé) et `host` (collectif)."""
     try:
+        # IFNULL(active, TRUE) : ne renvoie que les sets actifs, tout en restant
+        # compatible avec les lignes antérieures à la migration 010 (active NULL).
         query = f"""
         SELECT * FROM `{Config.BQ_TIMETABLE}`
-        WHERE festival_id = @festival_id
+        WHERE festival_id = @festival_id AND IFNULL(active, TRUE) = TRUE
         ORDER BY day_int, stage, start_time
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
         )
-        return client.query(query, job_config=job_config).result().to_dataframe()
+        df = client.query(query, job_config=job_config).result().to_dataframe()
+        # Colonnes internes au soft-delete : inutiles à l'app et `deactivated_at`
+        # (NaT pour les sets actifs) ferait échouer jsonify (non géré par _nan_to_none).
+        return df.drop(columns=["active", "deactivated_at"], errors="ignore")
     except Exception as e:
         logging.error(f"Erreur lors de la récupération de la timetable: {e}")
         raise
+
+
+# ============================================================================
+# SYNCHRONISATION DE LA TIMETABLE (diff/merge — set_id STABLE)
+# ============================================================================
+# Identité d'un set = clé naturelle NK = (dj, stage, day) NORMALISÉE. Seul
+# l'horaire qui change conserve le set_id (UPDATE). Un set disparu du scrape est
+# DÉSACTIVÉ (active=FALSE), pas supprimé : ses favoris/tags/notes restent valides
+# et il peut être rétabli (réactivation du MÊME set_id) s'il réapparaît.
+# La bio n'est écrite qu'à la CRÉATION (INSERT) — jamais réécrite sur un set
+# existant.
+
+_TIMETABLE_SCHEMA = [
+    bigquery.SchemaField("set_id", "INT64", mode="REQUIRED"),
+    bigquery.SchemaField("dj", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("stage", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("host", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("day", "STRING", mode="REQUIRED"),
+    bigquery.SchemaField("day_int", "INT64", mode="REQUIRED"),
+    bigquery.SchemaField("stage_order", "INT64"),
+    bigquery.SchemaField("bio", "STRING"),
+    bigquery.SchemaField("start_time", "TIMESTAMP", mode="REQUIRED"),
+    bigquery.SchemaField("end_time", "TIMESTAMP", mode="REQUIRED"),
+    bigquery.SchemaField("festival_id", "INT64", mode="REQUIRED"),
+    bigquery.SchemaField("active", "BOOL"),
+    bigquery.SchemaField("deactivated_at", "TIMESTAMP"),
+]
+
+# Garde-fou anti-désactivation massive : un scrape vide/cassé/partiel ne doit
+# JAMAIS pouvoir annuler une grande partie du line-up (crucial en cron, sans
+# humain pour relire le plan). Au-delà de ce seuil, on refuse d'appliquer.
+_MAX_CANCEL_FRACTION = 0.5
+
+# Sépare les artistes d'un b2b pour rendre la clé insensible à leur ordre.
+_SEP_RE = re.compile(r"\s*(?:&|\bb2b\b)\s*", re.IGNORECASE)
+
+_PROGRAMMATION_THEME = "programmation"
+
+_FR_DAYS = {
+    "monday": "lundi", "tuesday": "mardi", "wednesday": "mercredi",
+    "thursday": "jeudi", "friday": "vendredi", "saturday": "samedi",
+    "sunday": "dimanche",
+}
+
+
+class MassCancellationError(RuntimeError):
+    """Levée quand un apply annulerait trop de sets actifs (scrape suspect)."""
+
+
+def _normalize_artist(dj) -> str:
+    parts = [p.strip().casefold() for p in _SEP_RE.split(str(dj)) if p.strip()]
+    return " & ".join(sorted(parts)) if parts else str(dj).strip().casefold()
+
+
+def _nk(dj, stage, day) -> tuple:
+    return (_normalize_artist(dj), str(stage).strip().casefold(), str(day).strip().casefold())
+
+
+def _to_naive_utc(ts):
+    """datetime/Timestamp (aware ou naïf) -> datetime naïf en UTC."""
+    if ts is None or (isinstance(ts, float) and pd.isna(ts)):
+        return None
+    if isinstance(ts, pd.Timestamp):
+        ts = ts.to_pydatetime()
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return ts
+
+
+def _opt_int(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    return int(v)
+
+
+def _opt_str(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    return str(v)
+
+
+def get_max_set_id() -> int:
+    """Plus grand set_id existant (tous festivals, actifs ET inactifs), ou -1 si
+    table vide. Garantit des set_id globalement uniques et jamais réutilisés."""
+    query = f"SELECT MAX(set_id) AS m FROM `{Config.BQ_TIMETABLE}`"
+    rows = list(client.query(query).result())
+    return rows[0].m if rows and rows[0].m is not None else -1
+
+
+def _load_existing_sets(festival_id):
+    """Tous les sets d'un festival (actifs ET inactifs), pour le diff."""
+    query = f"""
+        SELECT set_id, dj, stage, host, day, day_int, stage_order, bio,
+               start_time, end_time, IFNULL(active, TRUE) AS active
+        FROM `{Config.BQ_TIMETABLE}`
+        WHERE festival_id = @festival_id
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
+    )
+    rows = client.query(query, job_config=job_config).result()
+    return [
+        {
+            "set_id": int(r.set_id), "dj": r.dj, "stage": r.stage, "host": r.host,
+            "day": r.day, "day_int": r.day_int, "stage_order": r.stage_order, "bio": r.bio,
+            "start_time": _to_naive_utc(r.start_time),
+            "end_time": _to_naive_utc(r.end_time),
+            "active": bool(r.active),
+        }
+        for r in rows
+    ]
+
+
+def select_new_sets(df, festival_id):
+    """Masque booléen des lignes de `df` ABSENTES de la base (sets jamais vus,
+    actifs ou inactifs) — pour n'enrichir bio/photo QUE les nouveaux. Un set
+    rétabli n'est PAS « nouveau » (sa bio d'origine est conservée)."""
+    known = {_nk(r["dj"], r["stage"], r["day"]) for r in _load_existing_sets(festival_id)}
+    return df.apply(lambda r: _nk(r["dj"], r["stage"], r["day"]) not in known, axis=1)
+
+
+def sync_timetable_festival(df, festival_id, dry_run=False, force=False):
+    """Synchronise la timetable d'UN festival par diff (set_id STABLE).
+    Retourne la liste des changements (types : added / rescheduled / restored /
+    cancelled / updated). dry_run=True : ne calcule que le plan, n'écrit rien.
+    force=False : lève MassCancellationError si > _MAX_CANCEL_FRACTION des sets
+    actifs seraient désactivés (scrape suspect)."""
+    try:
+        df = df.copy()
+        df["start_time"] = df["start_time"].apply(_to_naive_utc)
+        df["end_time"] = df["end_time"].apply(_to_naive_utc)
+
+        existing = _load_existing_sets(festival_id)
+        by_nk = defaultdict(list)
+        for r in existing:
+            by_nk[_nk(r["dj"], r["stage"], r["day"])].append(r)
+        for lst in by_nk.values():
+            lst.sort(key=lambda r: r["start_time"] or datetime.datetime.min)
+
+        matched = set()
+        changes = []
+        insert_rows = []
+        update_ops = []
+        next_id = get_max_set_id() + 1
+
+        for _, row in df.iterrows():
+            nk = _nk(row["dj"], row["stage"], row["day"])
+            candidates = [r for r in by_nk.get(nk, []) if r["set_id"] not in matched]
+            if candidates:
+                match = min(
+                    candidates,
+                    key=lambda r: abs(((r["start_time"] or datetime.datetime.min) - row["start_time"]).total_seconds()),
+                )
+                matched.add(match["set_id"])
+                reactivate = not match["active"]
+                time_changed = (
+                    match["start_time"] != row["start_time"]
+                    or match["end_time"] != row["end_time"]
+                )
+                attrs_changed = (
+                    (_opt_str(match["host"]) or "") != (_opt_str(row.get("host")) or "")
+                    or match["stage_order"] != _opt_int(row.get("stage_order"))
+                    or str(match["dj"]) != str(row["dj"])
+                    or str(match["stage"]) != str(row["stage"])
+                    or str(match["day"]) != str(row["day"])
+                )
+                if reactivate or time_changed or attrs_changed:
+                    update_ops.append((match["set_id"], row, reactivate))
+                if reactivate:
+                    changes.append(_change("restored", match["set_id"], row, new_start=row["start_time"]))
+                elif time_changed:
+                    changes.append(_change(
+                        "rescheduled", match["set_id"], row,
+                        old_start=match["start_time"], new_start=row["start_time"],
+                        old_end=match["end_time"], new_end=row["end_time"],
+                    ))
+                elif attrs_changed:
+                    changes.append(_change("updated", match["set_id"], row))
+            else:
+                sid = next_id
+                next_id += 1
+                insert_rows.append((sid, row))
+                changes.append(_change("added", sid, row, new_start=row["start_time"]))
+
+        cancelled_ids = [r["set_id"] for r in existing if r["active"] and r["set_id"] not in matched]
+        for r in existing:
+            if r["active"] and r["set_id"] not in matched:
+                changes.append({
+                    "type": "cancelled", "set_id": r["set_id"], "dj": r["dj"],
+                    "stage": r["stage"], "day": r["day"], "old_start": r["start_time"],
+                })
+
+        if dry_run:
+            return changes
+
+        active_count = sum(1 for r in existing if r["active"])
+        if not force and active_count and len(cancelled_ids) > active_count * _MAX_CANCEL_FRACTION:
+            raise MassCancellationError(
+                f"{len(cancelled_ids)}/{active_count} sets actifs seraient désactivés "
+                f"(> {int(_MAX_CANCEL_FRACTION * 100)} %). Scrape probablement vide/cassé/"
+                f"partiel — application ANNULÉE (rien écrit). Relancer avec force=True si "
+                f"c'est un vrai remaniement."
+            )
+
+        if insert_rows:
+            _insert_new_sets(insert_rows, festival_id)
+        for set_id, row, reactivate in update_ops:
+            _update_set(set_id, row, festival_id, reactivate)
+        if cancelled_ids:
+            _deactivate_sets(cancelled_ids, festival_id)
+
+        return changes
+    except MassCancellationError:
+        raise
+    except Exception as e:
+        logging.error(f"Erreur sync_timetable_festival: {e}")
+        raise
+
+
+def _change(change_type, set_id, row, **extra):
+    base = {"type": change_type, "set_id": set_id, "dj": row["dj"],
+            "stage": row["stage"], "day": row["day"]}
+    base.update(extra)
+    return base
+
+
+def _insert_new_sets(insert_rows, festival_id):
+    recs = [
+        {
+            "set_id": set_id, "dj": str(row["dj"]), "stage": str(row["stage"]),
+            "host": _opt_str(row.get("host")) or "", "day": str(row["day"]),
+            "day_int": int(row["day_int"]), "stage_order": _opt_int(row.get("stage_order")),
+            "bio": _opt_str(row.get("bio")),
+            "start_time": row["start_time"], "end_time": row["end_time"],
+            "festival_id": festival_id, "active": True, "deactivated_at": None,
+        }
+        for set_id, row in insert_rows
+    ]
+    new_df = pd.DataFrame(recs)[[f.name for f in _TIMETABLE_SCHEMA]]
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", schema=_TIMETABLE_SCHEMA)
+    client.load_table_from_dataframe(new_df, Config.BQ_TIMETABLE, job_config=job_config).result()
+
+
+def _update_set(set_id, row, festival_id, reactivate):
+    """UPDATE des attributs (HORS bio) d'un set existant — set_id préservé. La bio
+    n'est jamais réécrite (posée à la création)."""
+    extra = ", active = TRUE, deactivated_at = NULL" if reactivate else ""
+    query = f"""
+        UPDATE `{Config.BQ_TIMETABLE}`
+        SET dj = @dj, stage = @stage, host = @host, day = @day, day_int = @day_int,
+            stage_order = @stage_order,
+            start_time = @start_time, end_time = @end_time{extra}
+        WHERE festival_id = @festival_id AND set_id = @set_id
+    """
+    params = [
+        bigquery.ScalarQueryParameter("dj", "STRING", str(row["dj"])),
+        bigquery.ScalarQueryParameter("stage", "STRING", str(row["stage"])),
+        bigquery.ScalarQueryParameter("host", "STRING", _opt_str(row.get("host")) or ""),
+        bigquery.ScalarQueryParameter("day", "STRING", str(row["day"])),
+        bigquery.ScalarQueryParameter("day_int", "INT64", int(row["day_int"])),
+        bigquery.ScalarQueryParameter("stage_order", "INT64", _opt_int(row.get("stage_order"))),
+        bigquery.ScalarQueryParameter("start_time", "TIMESTAMP", row["start_time"]),
+        bigquery.ScalarQueryParameter("end_time", "TIMESTAMP", row["end_time"]),
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+    ]
+    client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+
+
+def _deactivate_sets(set_ids, festival_id):
+    query = f"""
+        UPDATE `{Config.BQ_TIMETABLE}`
+        SET active = FALSE, deactivated_at = CURRENT_TIMESTAMP()
+        WHERE festival_id = @festival_id AND set_id IN UNNEST(@ids)
+    """
+    params = [
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ArrayQueryParameter("ids", "INT64", list(set_ids)),
+    ]
+    client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
+
+
+# --- Journal des changements de programmation (theme = 'programmation') ------
+
+def _fr_day(day) -> str:
+    return _FR_DAYS.get(str(day).strip().lower(), str(day))
+
+
+def _local_hm(dt, tz) -> str:
+    if dt is None:
+        return ""
+    return dt.replace(tzinfo=datetime.timezone.utc).astimezone(tz).strftime("%H:%M")
+
+
+def _lineup_change_message(c, tz):
+    """(title, body) lisibles festivalier, ou None si le type n'est pas journalisé."""
+    dj, stage, day = c["dj"], c["stage"], _fr_day(c["day"])
+    if c["type"] == "added":
+        return ("Nouveau set", f"{dj} rejoint le line-up — {stage}, {day} {_local_hm(c.get('new_start'), tz)}.")
+    if c["type"] == "restored":
+        return ("Set rétabli", f"{dj} est de retour — {stage}, {day} {_local_hm(c.get('new_start'), tz)}.")
+    if c["type"] == "cancelled":
+        return ("Set annulé", f"{dj} ne jouera finalement pas ({stage}, {day}).")
+    if c["type"] == "rescheduled":
+        return ("Changement d'horaire",
+                f"{dj} ({stage}, {day}) : {_local_hm(c.get('old_start'), tz)} → {_local_hm(c.get('new_start'), tz)}.")
+    return None
+
+
+def journal_lineup_changes(festival_id, changes, tz) -> int:
+    """Consigne les changements VISIBLES dans `notifications` (theme=
+    'programmation', pushed=FALSE). Retourne le nombre d'entrées écrites."""
+    run_ts = datetime.datetime.utcnow().isoformat()
+    written = 0
+    for c in changes:
+        msg = _lineup_change_message(c, tz)
+        if msg is None:
+            continue
+        title, body = msg
+        slot_key = f"prog|{c['type']}|{c['set_id']}|{run_ts}"
+        insert_notification(
+            festival_id, slot_key, day=(str(c.get("day")) if c.get("day") else None),
+            scheduled_local=None, theme=_PROGRAMMATION_THEME,
+            title=title, body=body, pushed=False, variant=None,
+        )
+        written += 1
+    return written
+
+
+def get_unpushed_programmation(festival_id):
+    """Entrées de programmation pas encore poussées (pour le push 2b, idempotent :
+    une push échouée repart au run suivant)."""
+    query = f"""
+        SELECT slot_key, title, body
+        FROM `{Config.BQ_NOTIFICATIONS}`
+        WHERE festival_id = @festival_id AND theme = @theme AND IFNULL(pushed, FALSE) = FALSE
+        ORDER BY created_at
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("theme", "STRING", _PROGRAMMATION_THEME),
+    ])
+    rows = client.query(query, job_config=job_config).result()
+    return [{"slot_key": str(r.slot_key), "title": str(r.title), "body": str(r.body)} for r in rows]
+
+
+def mark_notification_pushed(festival_id, slot_key):
+    query = f"""
+        UPDATE `{Config.BQ_NOTIFICATIONS}` SET pushed = TRUE
+        WHERE festival_id = @festival_id AND slot_key = @slot_key
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("slot_key", "STRING", slot_key),
+    ])
+    client.query(query, job_config=job_config).result()
 
 
 # ============================================================================
@@ -458,6 +821,7 @@ def get_now_playing_dj(festival_id, stage):
         SELECT dj
         FROM `{Config.BQ_TIMETABLE}`
         WHERE festival_id = @festival_id
+          AND IFNULL(active, TRUE) = TRUE
           AND stage = @stage
           AND TIMESTAMP(start_time) <= CURRENT_TIMESTAMP()
           AND TIMESTAMP(end_time) > CURRENT_TIMESTAMP()
@@ -484,6 +848,7 @@ def get_first_set_start_utc(festival_id, day):
         SELECT MIN(TIMESTAMP(start_time)) AS first_start
         FROM `{Config.BQ_TIMETABLE}`
         WHERE festival_id = @festival_id AND LOWER(day) = LOWER(@day)
+          AND IFNULL(active, TRUE) = TRUE
         """
         job_config = bigquery.QueryJobConfig(query_parameters=[
             bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
@@ -981,20 +1346,19 @@ def get_favorite_count_by_user(festival_id, day=None):
 def _count_favorites_by_user(festival_id, day, notation_only):
     try:
         condition = "uf.notation IS NOT NULL" if notation_only else "uf.isfavorite = TRUE"
-        day_join = ""
         params = [bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id)]
+        # On rattache TOUJOURS au set pour ne compter que les favoris sur des sets
+        # ACTIFS (un set désactivé ne doit plus peser dans les palmarès), et pour
+        # filtrer par jour si demandé.
+        condition += " AND IFNULL(t.active, TRUE) = TRUE"
         if day is not None:
-            # On rattache au set pour filtrer par jour de programmation.
-            day_join = f"""
-              JOIN `{Config.BQ_TIMETABLE}` t
-                ON t.set_id = uf.set_id AND t.festival_id = @festival_id
-            """
             condition += " AND LOWER(t.day) = @day"
             params.append(bigquery.ScalarQueryParameter("day", "STRING", day.lower()))
         query = f"""
         SELECT uf.user_id AS user_id, COUNT(*) AS n
         FROM `{Config.BQ_USER_FAVORITES}` uf
-        {day_join}
+        JOIN `{Config.BQ_TIMETABLE}` t
+          ON t.set_id = uf.set_id AND t.festival_id = @festival_id
         WHERE uf.festival_id = @festival_id AND {condition}
         GROUP BY uf.user_id
         ORDER BY n DESC
@@ -1028,6 +1392,7 @@ def get_user_top_fav_stage(festival_id, user_id, day=None):
         WHERE uf.festival_id = @festival_id
           AND uf.user_id = @user_id
           AND uf.isfavorite = TRUE
+          AND IFNULL(t.active, TRUE) = TRUE
           {day_filter}
         GROUP BY t.stage
         ORDER BY n DESC
@@ -1049,6 +1414,7 @@ def get_main_stage(festival_id):
         SELECT stage
         FROM `{Config.BQ_TIMETABLE}`
         WHERE festival_id = @festival_id AND stage IS NOT NULL
+          AND IFNULL(active, TRUE) = TRUE
         GROUP BY stage, stage_order
         ORDER BY stage_order IS NULL, stage_order, LOWER(stage)
         LIMIT 1
@@ -1095,7 +1461,7 @@ def get_trending_djs(festival_id, day=None, limit=3):
         JOIN `{Config.BQ_TIMETABLE}` t
           ON t.set_id = ps.set_id AND t.festival_id = @festival_id
         CROSS JOIN gm
-        WHERE TRUE {day_filter}
+        WHERE IFNULL(t.active, TRUE) = TRUE {day_filter}
         ORDER BY bayes DESC, n DESC, avg DESC, LOWER(t.dj)
         LIMIT @lim
         """
