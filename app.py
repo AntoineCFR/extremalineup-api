@@ -43,6 +43,7 @@ from bigquery import (
     get_unpushed_programmation,
     mark_notification_pushed,
     ensure_stages_exist,
+    rejournal_programmation,
     MassCancellationError,
 )
 from config import Config
@@ -855,6 +856,40 @@ def refresh_lineup():
         return jsonify({"error": "festival_id must be an integer"}), 400
     except Exception as e:
         logger.error(f"Erreur /api/admin/refresh-lineup: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Réécrit le texte des entrées « programmation » déjà journalisées avec le
+# wording courant (rétroactif). Idempotent, n'envoie aucun push. Même secret.
+@app.route('/api/admin/rejournal-programmation', methods=['GET', 'POST'])
+def rejournal_programmation_route():
+    if not _admin_authorized(request):
+        return jsonify({"error": "unauthorized"}), 403
+    raw = request.args.get('festival_id')
+    try:
+        if raw:
+            festival = get_bigquery_festival(int(raw))
+            festivals = [festival] if festival else []
+        else:
+            festivals = get_bigquery_festivals(active_only=True)
+
+        results = []
+        for festival in festivals:
+            if not festival:
+                continue
+            fid = festival.get("festival_id")
+            tz = ZoneInfo(festival["timezone"]) if festival.get("timezone") else ZoneInfo("UTC")
+            try:
+                n = rejournal_programmation(fid, tz)
+                results.append({"festival_id": fid, "rejournaled": n})
+            except Exception as fe:
+                logger.error(f"Erreur rejournal festival {fid}: {fe}")
+                results.append({"festival_id": fid, "error": str(fe)})
+        return jsonify({"status": "success", "results": results}), 200
+    except ValueError:
+        return jsonify({"error": "festival_id must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"Erreur /api/admin/rejournal-programmation: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

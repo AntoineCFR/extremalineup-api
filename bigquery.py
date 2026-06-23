@@ -262,7 +262,8 @@ def sync_timetable_festival(df, festival_id, dry_run=False, force=False):
                 if reactivate or time_changed or attrs_changed:
                     update_ops.append((match["set_id"], row, reactivate))
                 if reactivate:
-                    changes.append(_change("restored", match["set_id"], row, new_start=row["start_time"]))
+                    changes.append(_change("restored", match["set_id"], row,
+                                           new_start=row["start_time"], new_end=row["end_time"]))
                 elif time_changed:
                     changes.append(_change(
                         "rescheduled", match["set_id"], row,
@@ -275,7 +276,8 @@ def sync_timetable_festival(df, festival_id, dry_run=False, force=False):
                 sid = next_id
                 next_id += 1
                 insert_rows.append((sid, row))
-                changes.append(_change("added", sid, row, new_start=row["start_time"]))
+                changes.append(_change("added", sid, row,
+                                       new_start=row["start_time"], new_end=row["end_time"]))
 
         cancelled_ids = [r["set_id"] for r in existing if r["active"] and r["set_id"] not in matched]
         for r in existing:
@@ -390,15 +392,20 @@ def _local_hm(dt, tz) -> str:
 def _lineup_change_message(c, tz):
     """(title, body) lisibles festivalier, ou None si le type n'est pas journalisé."""
     dj, stage, day = c["dj"], c["stage"], _fr_day(c["day"])
+    start = _local_hm(c.get("new_start"), tz)
+    end = _local_hm(c.get("new_end"), tz)
     if c["type"] == "added":
-        return ("Nouveau set", f"{dj} rejoint le line-up — {stage}, {day} {_local_hm(c.get('new_start'), tz)}.")
+        return ("Nouveau DJ ajouté au line-up ! 🎉",
+                f"{dj} débarque sur {stage}, {day} de {start} à {end}.")
     if c["type"] == "restored":
-        return ("Set rétabli", f"{dj} est de retour — {stage}, {day} {_local_hm(c.get('new_start'), tz)}.")
+        return ("Finalement, si ! ✅",
+                f"{dj} est maintenu sur {stage}, {day} de {start} à {end}.")
     if c["type"] == "cancelled":
-        return ("Set annulé", f"{dj} ne jouera finalement pas ({stage}, {day}).")
+        return ("Set annulé… ❌",
+                f"{dj} ne jouera finalement pas ({stage}, {day}).")
     if c["type"] == "rescheduled":
-        return ("Changement d'horaire",
-                f"{dj} ({stage}, {day}) : {_local_hm(c.get('old_start'), tz)} → {_local_hm(c.get('new_start'), tz)}.")
+        return ("Nouvel horaire 🕒",
+                f"Le set de {dj} aura maintenant lieu {day} de {start} à {end} sur {stage}.")
     return None
 
 
@@ -420,6 +427,87 @@ def journal_lineup_changes(festival_id, changes, tz) -> int:
         )
         written += 1
     return written
+
+
+def _get_set_by_id(festival_id, set_id):
+    """État courant d'un set (dj/scène/jour/horaires) par son set_id — actif ou
+    non. Sert à régénérer le texte d'une entrée de journal déjà écrite."""
+    query = f"""
+        SELECT dj, stage, day, start_time, end_time
+        FROM `{Config.BQ_TIMETABLE}`
+        WHERE festival_id = @festival_id AND set_id = @set_id
+        LIMIT 1
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+    ])
+    rows = list(client.query(query, job_config=jc).result())
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "dj": r.dj, "stage": r.stage, "day": r.day,
+        "start_time": _to_naive_utc(r.start_time),
+        "end_time": _to_naive_utc(r.end_time),
+    }
+
+
+def _update_notification_text(festival_id, slot_key, title, body):
+    query = f"""
+        UPDATE `{Config.BQ_NOTIFICATIONS}` SET title = @title, body = @body
+        WHERE festival_id = @festival_id AND slot_key = @slot_key
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("title", "STRING", title),
+        bigquery.ScalarQueryParameter("body", "STRING", body),
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("slot_key", "STRING", slot_key),
+    ])
+    client.query(query, job_config=jc).result()
+
+
+def rejournal_programmation(festival_id, tz):
+    """RÉTROACTIF : régénère titre+corps des entrées 'programmation' déjà
+    journalisées, à partir du wording COURANT et de l'état actuel du set
+    (timetable). Idempotent (réécrit au même texte si relancé). Le set_id et le
+    type sont relus dans le slot_key (`prog|type|set_id|run_ts`). Retourne le
+    nombre d'entrées mises à jour. N'envoie aucun push."""
+    q = f"""
+        SELECT slot_key FROM `{Config.BQ_NOTIFICATIONS}`
+        WHERE festival_id = @festival_id AND theme = @theme
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("theme", "STRING", _PROGRAMMATION_THEME),
+    ])
+    updated = 0
+    for row in client.query(q, job_config=jc).result():
+        slot_key = str(row.slot_key)
+        parts = slot_key.split("|")
+        if len(parts) < 3 or parts[0] != "prog":
+            continue
+        ctype = parts[1]
+        try:
+            set_id = int(parts[2])
+        except ValueError:
+            continue
+        s = _get_set_by_id(festival_id, set_id)
+        if not s:
+            continue
+        # On régénère depuis l'état COURANT du set. Le nouveau wording n'utilise
+        # que les horaires actuels (new_start/new_end) — pas les anciens.
+        change = {
+            "type": ctype, "dj": s["dj"], "stage": s["stage"], "day": s["day"],
+            "new_start": s["start_time"], "new_end": s["end_time"],
+        }
+        msg = _lineup_change_message(change, tz)
+        if msg is None:
+            continue
+        title, body = msg
+        _update_notification_text(festival_id, slot_key, title, body)
+        updated += 1
+    return updated
 
 
 def get_unpushed_programmation(festival_id):

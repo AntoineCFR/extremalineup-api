@@ -115,6 +115,7 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET`/`POST` | `/api/admin/refresh-lineup[?festival_id=][&dry_run=true][&force=true]` | Re-scrape a festival's line-up and **diff-sync** it into `timetable` (stable `set_id`), log every change to the Journal (`programmation` theme) and push one notification per change. **Mutates data → requires a secret in a header** (`Authorization: Bearer <ADMIN_REFRESH_TOKEN>` or `X-Admin-Token: <…>`; never in the URL). Without `festival_id`, processes all active, not-yet-ended festivals that have a scraper. `dry_run=true` returns the planned changes **without writing or pushing**. `force=true` bypasses the mass-cancellation guard. |
+| `GET`/`POST` | `/api/admin/rejournal-programmation[?festival_id=]` | Re-render the title/body of already-logged `programmation` journal entries with the **current wording** (retroactive; reads the set's current state from `timetable`). Idempotent, sends no push. Same header secret. |
 
 ---
 
