@@ -295,10 +295,7 @@ def update_weather():
             for forecast in weather_data["forecast"]["forecastday"]:
                 date_str = forecast["date"]
                 forecast_date = date.fromisoformat(date_str)
-                # On stocke tous les jours renvoyés jusqu'à la fin du festival ;
-                # on ne filtre plus sur start_date pour ne pas bloquer les jours
-                # du début du festival qui entrent tout juste dans la fenêtre.
-                if forecast_date <= end:
+                    if start <= forecast_date <= end:
                     day_data = forecast["day"]
                     weather_forecasts.append({
                         "date": date_str,
