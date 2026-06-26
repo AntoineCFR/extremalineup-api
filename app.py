@@ -295,7 +295,7 @@ def update_weather():
             for forecast in weather_data["forecast"]["forecastday"]:
                 date_str = forecast["date"]
                 forecast_date = date.fromisoformat(date_str)
-                    if start <= forecast_date <= end:
+                if start <= forecast_date <= end:
                     day_data = forecast["day"]
                     weather_forecasts.append({
                         "date": date_str,
