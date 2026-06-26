@@ -269,24 +269,36 @@ def update_weather():
 
         results = []
         for festival in upcoming:
-            start = date.fromisoformat(festival["start_date"])
             end = date.fromisoformat(festival["end_date"])
+            # Nombre de jours à demander : de aujourd'hui jusqu'à la fin du festival,
+            # plafonné à 14 (limite du plan WeatherAPI).
+            days_needed = min((end - today).days + 2, 14)
 
+            logger.info(
+                f"WeatherAPI → festival {festival['festival_id']} ({festival['city']}), "
+                f"end={end}, days_needed={days_needed}"
+            )
             params = {
                 'key': Config.WEATHER_API_KEY.strip(),
                 'q': festival["city"],
-                'days': 14,
+                'days': days_needed,
                 'lang': 'fr',
             }
             response = requests.get('http://api.weatherapi.com/v1/forecast.json', params=params)
             response.raise_for_status()
             weather_data = response.json()
 
+            returned_dates = [f["date"] for f in weather_data["forecast"]["forecastday"]]
+            logger.info(f"WeatherAPI a renvoyé {len(returned_dates)} jours : {returned_dates}")
+
             weather_forecasts = []
             for forecast in weather_data["forecast"]["forecastday"]:
                 date_str = forecast["date"]
                 forecast_date = date.fromisoformat(date_str)
-                if start <= forecast_date <= end:
+                # On stocke tous les jours renvoyés jusqu'à la fin du festival ;
+                # on ne filtre plus sur start_date pour ne pas bloquer les jours
+                # du début du festival qui entrent tout juste dans la fenêtre.
+                if forecast_date <= end:
                     day_data = forecast["day"]
                     weather_forecasts.append({
                         "date": date_str,
@@ -303,6 +315,11 @@ def update_weather():
                 store_bigquery_weather_forecast(festival["festival_id"], weather_forecasts)
                 results.append({"festival_id": festival["festival_id"], "days": len(weather_forecasts)})
                 logger.info(f"Météo stockée pour le festival {festival['festival_id']} ({len(weather_forecasts)} jours).")
+            else:
+                logger.warning(
+                    f"Aucun jour festival dans la réponse WeatherAPI pour le festival "
+                    f"{festival['festival_id']} (start={festival['start_date']}, end={festival['end_date']})."
+                )
 
         return jsonify({"status": "success", "updated": results}), 200
 
