@@ -269,6 +269,7 @@ def update_weather():
 
         results = []
         for festival in upcoming:
+            start = date.fromisoformat(festival["start_date"])
             end = date.fromisoformat(festival["end_date"])
             # Nombre de jours à demander : de aujourd'hui jusqu'à la fin du festival,
             # plafonné à 14 (limite du plan WeatherAPI).
