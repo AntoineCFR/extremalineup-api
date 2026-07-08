@@ -222,12 +222,21 @@ def select_new_sets(df, festival_id):
     return df.apply(lambda r: _nk(r["dj"], r["stage"], r["day"]) not in known, axis=1)
 
 
-def sync_timetable_festival(df, festival_id, dry_run=False, force=False):
+def sync_timetable_festival(df, festival_id, dry_run=False, force=False, exclude_keys=None):
     """Synchronise la timetable d'UN festival par diff (set_id STABLE).
-    Retourne la liste des changements (types : added / rescheduled / restored /
-    cancelled / updated). dry_run=True : ne calcule que le plan, n'écrit rien.
+    Retourne la liste COMPLÈTE des changements détectés (types : added /
+    rescheduled / restored / cancelled / updated), y compris ceux exclus —
+    seule leur écriture en base est sautée, pour un rapport fidèle à ce qui a
+    été réellement détecté vs réellement appliqué.
+    dry_run=True : ne calcule que le plan, n'écrit rien.
     force=False : lève MassCancellationError si > _MAX_CANCEL_FRACTION des sets
-    actifs seraient désactivés (scrape suspect)."""
+    actifs seraient désactivés (scrape suspect), calculé sur les annulations
+    RÉELLEMENT appliquées (post-exclusion).
+    exclude_keys : set de `change["key"]` (cf. `_change_key`) à détecter mais
+    ne PAS écrire — permet à l'admin de rejeter certaines entrées d'un apply
+    partiel (ex. sets ajoutés à la main, pas encore repris par le site scrapé,
+    à tort détectés « cancelled »)."""
+    exclude_keys = exclude_keys or set()
     try:
         df = df.copy()
         df["start_time"] = df["start_time"].apply(_to_naive_utc)
@@ -260,40 +269,58 @@ def sync_timetable_festival(df, festival_id, dry_run=False, force=False):
                     match["start_time"] != row["start_time"]
                     or match["end_time"] != row["end_time"]
                 )
-                attrs_changed = (
-                    (_opt_str(match["host"]) or "") != (_opt_str(row.get("host")) or "")
-                    or match["stage_order"] != _opt_int(row.get("stage_order"))
-                    or str(match["dj"]) != str(row["dj"])
-                    or str(match["stage"]) != str(row["stage"])
-                    or str(match["day"]) != str(row["day"])
-                )
-                if reactivate or time_changed or attrs_changed:
-                    update_ops.append((match["set_id"], row, reactivate))
+                # Champ -> (ancienne valeur, nouvelle valeur), seulement les champs qui
+                # diffèrent réellement — sert à afficher précisément quoi a changé pour
+                # un type "updated" (host/stage_order/orthographe dj-stage-day : le
+                # matching par clé naturelle est insensible à la casse/espaces, donc une
+                # correction d'orthographe tombe ici plutôt qu'en "added"+"cancelled").
+                attr_diffs = {}
+                old_host, new_host = _opt_str(match["host"]) or "", _opt_str(row.get("host")) or ""
+                if old_host != new_host:
+                    attr_diffs["host"] = {"old": old_host, "new": new_host}
+                old_order, new_order = match["stage_order"], _opt_int(row.get("stage_order"))
+                if old_order != new_order:
+                    attr_diffs["stage_order"] = {"old": old_order, "new": new_order}
+                if str(match["dj"]) != str(row["dj"]):
+                    attr_diffs["dj"] = {"old": str(match["dj"]), "new": str(row["dj"])}
+                if str(match["stage"]) != str(row["stage"]):
+                    attr_diffs["stage"] = {"old": str(match["stage"]), "new": str(row["stage"])}
+                if str(match["day"]) != str(row["day"]):
+                    attr_diffs["day"] = {"old": str(match["day"]), "new": str(row["day"])}
+                attrs_changed = bool(attr_diffs)
+
+                c = None
                 if reactivate:
-                    changes.append(_change("restored", match["set_id"], row,
-                                           new_start=row["start_time"], new_end=row["end_time"]))
+                    c = _change("restored", match["set_id"], row,
+                                new_start=row["start_time"], new_end=row["end_time"])
                 elif time_changed:
-                    changes.append(_change(
+                    c = _change(
                         "rescheduled", match["set_id"], row,
                         old_start=match["start_time"], new_start=row["start_time"],
                         old_end=match["end_time"], new_end=row["end_time"],
-                    ))
+                    )
                 elif attrs_changed:
-                    changes.append(_change("updated", match["set_id"], row))
+                    c = _change("updated", match["set_id"], row, attr_diffs=attr_diffs)
+                if c is not None:
+                    changes.append(c)
+                    if c["key"] not in exclude_keys:
+                        update_ops.append((match["set_id"], row, reactivate))
             else:
                 sid = next_id
                 next_id += 1
-                insert_rows.append((sid, row))
-                changes.append(_change("added", sid, row,
-                                       new_start=row["start_time"], new_end=row["end_time"]))
+                c = _change("added", sid, row,
+                            new_start=row["start_time"], new_end=row["end_time"])
+                changes.append(c)
+                if c["key"] not in exclude_keys:
+                    insert_rows.append((sid, row))
 
-        cancelled_ids = [r["set_id"] for r in existing if r["active"] and r["set_id"] not in matched]
+        cancelled_ids = []
         for r in existing:
             if r["active"] and r["set_id"] not in matched:
-                changes.append({
-                    "type": "cancelled", "set_id": r["set_id"], "dj": r["dj"],
-                    "stage": r["stage"], "day": r["day"], "old_start": r["start_time"],
-                })
+                c = _change("cancelled", r["set_id"], r, old_start=r["start_time"])
+                changes.append(c)
+                if c["key"] not in exclude_keys:
+                    cancelled_ids.append(r["set_id"])
 
         if dry_run:
             return changes
@@ -322,10 +349,20 @@ def sync_timetable_festival(df, festival_id, dry_run=False, force=False):
         raise
 
 
+def _change_key(c) -> str:
+    """Identifiant stable d'une entrée de diff, pour permettre à l'admin
+    d'exclure certaines entrées d'un apply partiel. Basé sur le CONTENU (pas
+    sur `set_id`, qui n'est pas encore un vrai id BigQuery pour les entrées
+    `added` — juste un id candidat calculé pendant le diff)."""
+    t = c.get("new_start") or c.get("old_start")
+    return f"{c['type']}|{c['dj']}|{c['stage']}|{c['day']}|{t}"
+
+
 def _change(change_type, set_id, row, **extra):
     base = {"type": change_type, "set_id": set_id, "dj": row["dj"],
             "stage": row["stage"], "day": row["day"]}
     base.update(extra)
+    base["key"] = _change_key(base)
     return base
 
 
