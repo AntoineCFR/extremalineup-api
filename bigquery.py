@@ -1384,6 +1384,68 @@ def get_bigquery_stage(festival_id, stage_name):
         logging.error(f"Erreur lors de la récupération de la scène {stage_name}: {e}")
         raise
 
+def get_bigquery_stage_by_id(festival_id, stage_id):
+    """Récupère une scène par son `stage_id` (clé stable, contrairement au
+    nom). Utilisé pour le renommage."""
+    try:
+        query = f"""
+        SELECT * FROM `{Config.BQ_STAGES}`
+        WHERE festival_id = @festival_id AND stage_id = @stage_id
+        """
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+                bigquery.ScalarQueryParameter("stage_id", "INT64", stage_id),
+            ]
+        )
+        rows = list(client.query(query, job_config=job_config).result())
+        return _stage_row_to_dict(rows[0]) if rows else None
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération de la scène stage_id={stage_id}: {e}")
+        raise
+
+
+def rename_bigquery_stage(festival_id, stage_id, new_name):
+    """Renomme une scène, identifiée par `stage_id` (pas par son nom courant —
+    c'est justement le rôle de stage_id : permettre un renommage sûr). Propage
+    le nouveau nom à tous les sets `timetable` déjà liés (par stage_id, OU par
+    l'ancien nom pour les sets créés avant que ce lien existe — et on en
+    profite pour leur assigner stage_id au passage, auto-réparateur).
+    Lève ValueError si la scène est introuvable ou si le nouveau nom est déjà
+    pris par une autre scène de ce festival."""
+    stage = get_bigquery_stage_by_id(festival_id, stage_id)
+    if stage is None:
+        raise ValueError(f"Scène stage_id={stage_id} introuvable pour le festival {festival_id}")
+    old_name = stage["stage"]
+    if new_name == old_name:
+        return stage
+    if get_bigquery_stage(festival_id, new_name) is not None:
+        raise ValueError(f"La scène « {new_name} » existe déjà pour ce festival")
+
+    params = [
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("stage_id", "INT64", stage_id),
+        bigquery.ScalarQueryParameter("old_name", "STRING", old_name),
+        bigquery.ScalarQueryParameter("new_name", "STRING", new_name),
+    ]
+    client.query(
+        f"""
+        UPDATE `{Config.BQ_STAGES}` SET stage = @new_name
+        WHERE festival_id = @festival_id AND stage_id = @stage_id
+        """,
+        job_config=bigquery.QueryJobConfig(query_parameters=params),
+    ).result()
+    client.query(
+        f"""
+        UPDATE `{Config.BQ_TIMETABLE}` SET stage = @new_name, stage_id = @stage_id
+        WHERE festival_id = @festival_id
+          AND (stage_id = @stage_id OR (stage_id IS NULL AND stage = @old_name))
+        """,
+        job_config=bigquery.QueryJobConfig(query_parameters=params),
+    ).result()
+    return get_bigquery_stage_by_id(festival_id, stage_id)
+
+
 def update_bigquery_stage(festival_id, stage_data):
     """Met à jour les coordonnées d'une scène."""
     try:
