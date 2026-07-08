@@ -182,6 +182,14 @@ def get_max_set_id() -> int:
     return rows[0].m if rows and rows[0].m is not None else -1
 
 
+def get_max_stage_id() -> int:
+    """Plus grand stage_id existant (tous festivals), ou -1 si aucune scène n'en
+    a encore un (avant backfill / table vide)."""
+    query = f"SELECT MAX(stage_id) AS m FROM `{Config.BQ_STAGES}`"
+    rows = list(client.query(query).result())
+    return rows[0].m if rows and rows[0].m is not None else -1
+
+
 def _load_existing_sets(festival_id):
     """Tous les sets d'un festival (actifs ET inactifs), pour le diff."""
     query = f"""
@@ -377,6 +385,115 @@ def _deactivate_sets(set_ids, festival_id):
     client.query(query, job_config=bigquery.QueryJobConfig(query_parameters=params)).result()
 
 
+# --- Rôle utilisateur (admin panel) ------------------------------------------
+
+def get_bigquery_user_role(user_id):
+    """Rôle de l'utilisateur ('admin'/'user'), ou None si le user_id est inconnu."""
+    query = f"SELECT user_role FROM `{Config.BQ_USERS}` WHERE id = @user_id"
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("user_id", "INT64", user_id)]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows or rows[0].user_role is None:
+        return None
+    return str(rows[0].user_role)
+
+
+# --- CRUD manuel des sets (admin panel) --------------------------------------
+
+def get_bigquery_set(festival_id, set_id):
+    """Un set par son id (actif ou non), ou None si introuvable dans ce festival."""
+    query = f"""
+        SELECT set_id, dj, stage, host, day, day_int, stage_order, bio,
+               start_time, end_time, IFNULL(active, TRUE) AS active
+        FROM `{Config.BQ_TIMETABLE}`
+        WHERE festival_id = @festival_id AND set_id = @set_id
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("set_id", "INT64", set_id),
+    ])
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "set_id": int(r.set_id), "dj": r.dj, "stage": r.stage, "host": r.host,
+        "day": r.day, "day_int": r.day_int, "stage_order": r.stage_order, "bio": r.bio,
+        "start_time": _to_naive_utc(r.start_time).isoformat(),
+        "end_time": _to_naive_utc(r.end_time).isoformat(),
+        "active": bool(r.active),
+    }
+
+
+def create_bigquery_set(festival_id, data):
+    """Crée un set manuellement (admin panel). `data` : dj, stage, host, day,
+    day_int, stage_order (optionnel), bio (optionnel), start_time, end_time
+    (ISO 8601). Assure aussi la ligne `stages` correspondante si nouvelle
+    (mêmes garanties que le scraper — coords à 0, jamais destructif).
+    Retourne le set créé (avec son set_id)."""
+    start_time = _to_naive_utc(datetime.datetime.fromisoformat(str(data["start_time"])))
+    end_time = _to_naive_utc(datetime.datetime.fromisoformat(str(data["end_time"])))
+    if end_time <= start_time:
+        raise ValueError("end_time doit être postérieur à start_time")
+
+    set_id = get_max_set_id() + 1
+    row = {
+        "set_id": set_id,
+        "dj": str(data["dj"]), "stage": str(data["stage"]),
+        "host": _opt_str(data.get("host")) or "", "day": str(data["day"]),
+        "day_int": int(data["day_int"]), "stage_order": _opt_int(data.get("stage_order")),
+        "bio": _opt_str(data.get("bio")),
+        "start_time": start_time, "end_time": end_time,
+        "festival_id": festival_id, "active": True, "deactivated_at": None,
+    }
+    new_df = pd.DataFrame([row])[[f.name for f in _TIMETABLE_SCHEMA]]
+    job_config = bigquery.LoadJobConfig(write_disposition="WRITE_APPEND", schema=_TIMETABLE_SCHEMA)
+    client.load_table_from_dataframe(new_df, Config.BQ_TIMETABLE, job_config=job_config).result()
+    ensure_stages_exist(festival_id, [row["stage"]])
+    return get_bigquery_set(festival_id, set_id)
+
+
+def update_bigquery_set(festival_id, set_id, data):
+    """Modifie un set existant (admin panel). Mêmes champs que `create_bigquery_set`
+    (host/stage_order/bio optionnels — repris de l'existant si absents). Lève
+    ValueError si le set n'existe pas dans ce festival."""
+    existing = get_bigquery_set(festival_id, set_id)
+    if existing is None:
+        raise ValueError(f"Set {set_id} introuvable pour le festival {festival_id}")
+
+    start_time = _to_naive_utc(datetime.datetime.fromisoformat(
+        str(data.get("start_time", existing["start_time"]))))
+    end_time = _to_naive_utc(datetime.datetime.fromisoformat(
+        str(data.get("end_time", existing["end_time"]))))
+    if end_time <= start_time:
+        raise ValueError("end_time doit être postérieur à start_time")
+
+    row = {
+        "dj": str(data.get("dj", existing["dj"])),
+        "stage": str(data.get("stage", existing["stage"])),
+        "host": _opt_str(data.get("host", existing["host"])) or "",
+        "day": str(data.get("day", existing["day"])),
+        "day_int": int(data.get("day_int", existing["day_int"])),
+        "stage_order": _opt_int(data.get("stage_order", existing["stage_order"])),
+        "start_time": start_time, "end_time": end_time,
+    }
+    _update_set(set_id, row, festival_id, reactivate=False)
+    ensure_stages_exist(festival_id, [row["stage"]])
+    return get_bigquery_set(festival_id, set_id)
+
+
+def delete_bigquery_set(festival_id, set_id):
+    """Supprime (soft-delete) un set — même mécanisme que la désactivation
+    automatique du scraper (active=FALSE), pour rester cohérent avec le reste
+    de la logique (favoris/tags/rejournal restent valides). Lève ValueError si
+    le set n'existe pas dans ce festival."""
+    existing = get_bigquery_set(festival_id, set_id)
+    if existing is None:
+        raise ValueError(f"Set {set_id} introuvable pour le festival {festival_id}")
+    _deactivate_sets([set_id], festival_id)
+
+
 # --- Journal des changements de programmation (theme = 'programmation') ------
 
 def _fr_day(day) -> str:
@@ -553,14 +670,17 @@ def ensure_stages_exist(festival_id, stage_names):
     missing = [n for n in dict.fromkeys(stage_names) if n and n not in existing]
     if not missing:
         return 0
+    next_stage_id = get_max_stage_id() + 1
     rows = [
-        {"stage": name, "festival_id": festival_id, **{c: 0.0 for c in _STAGE_COLS}}
-        for name in missing
+        {"stage": name, "festival_id": festival_id, "stage_id": next_stage_id + i,
+         **{c: 0.0 for c in _STAGE_COLS}}
+        for i, name in enumerate(missing)
     ]
     schema = (
         [bigquery.SchemaField("stage", "STRING", mode="REQUIRED")]
         + [bigquery.SchemaField(c, "FLOAT64") for c in _STAGE_COLS]
         + [bigquery.SchemaField("festival_id", "INT64", mode="REQUIRED")]
+        + [bigquery.SchemaField("stage_id", "INT64")]
     )
     job_config = bigquery.LoadJobConfig(
         write_disposition="WRITE_APPEND",
@@ -1188,7 +1308,8 @@ _STAGE_COLS = [
 ]
 
 def _stage_row_to_dict(row):
-    d = {"stage": str(row.stage)}
+    stage_id = getattr(row, "stage_id", None)
+    d = {"stage": str(row.stage), "stage_id": int(stage_id) if stage_id is not None else None}
     for col in _STAGE_COLS:
         value = getattr(row, col)
         d[col] = float(value) if value is not None else None
@@ -1250,6 +1371,58 @@ def update_bigquery_stage(festival_id, stage_data):
     except Exception as e:
         logging.error(f"Erreur lors de la mise à jour de la scène {stage_data['stage']}: {e}")
         raise
+
+def create_bigquery_stage(festival_id, stage_name):
+    """Crée une scène manuellement (admin panel), coords à 0 (à régler ensuite
+    dans l'app). Lève ValueError si une scène de ce nom existe déjà dans ce
+    festival. Retourne la scène créée."""
+    if get_bigquery_stage(festival_id, stage_name) is not None:
+        raise ValueError(f"La scène « {stage_name} » existe déjà pour ce festival")
+    stage_id = get_max_stage_id() + 1
+    row = {"stage": stage_name, "festival_id": festival_id, "stage_id": stage_id,
+           **{c: 0.0 for c in _STAGE_COLS}}
+    schema = (
+        [bigquery.SchemaField("stage", "STRING", mode="REQUIRED")]
+        + [bigquery.SchemaField(c, "FLOAT64") for c in _STAGE_COLS]
+        + [bigquery.SchemaField("festival_id", "INT64", mode="REQUIRED")]
+        + [bigquery.SchemaField("stage_id", "INT64")]
+    )
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND",
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        schema=schema,
+    )
+    client.load_table_from_json([row], Config.BQ_STAGES, job_config=job_config).result()
+    return get_bigquery_stage(festival_id, stage_name)
+
+
+def delete_bigquery_stage(festival_id, stage_name):
+    """Supprime une scène (admin panel). Lève ValueError si la scène n'existe
+    pas, ou si des sets ACTIFS de `timetable` la référencent encore (il faut
+    les réassigner/désactiver d'abord — on ne veut pas orpheliner des sets)."""
+    if get_bigquery_stage(festival_id, stage_name) is None:
+        raise ValueError(f"Scène « {stage_name} » introuvable pour le festival {festival_id}")
+    q = f"""
+        SELECT COUNT(*) AS n FROM `{Config.BQ_TIMETABLE}`
+        WHERE festival_id = @festival_id AND stage = @stage AND active = TRUE
+    """
+    jc = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("stage", "STRING", stage_name),
+    ])
+    in_use = list(client.query(q, job_config=jc).result())[0].n
+    if in_use:
+        raise ValueError(
+            f"{in_use} set(s) actif(s) référence(nt) encore « {stage_name} » — "
+            "à réassigner ou supprimer avant de retirer la scène"
+        )
+    query = f"DELETE FROM `{Config.BQ_STAGES}` WHERE festival_id = @festival_id AND stage = @stage"
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
+        bigquery.ScalarQueryParameter("stage", "STRING", stage_name),
+    ])
+    client.query(query, job_config=job_config).result()
+
 
 def get_stage_from_coordinates(festival_id, lat, lng):
     """Retourne le nom de la scène si les coordonnées sont à l'intérieur, sinon None."""
