@@ -30,7 +30,7 @@ from bigquery import (
     update_bigquery_stage,
     create_bigquery_stage,
     delete_bigquery_stage,
-    rename_bigquery_stage,
+    update_bigquery_stage_details,
     insert_bigquery_geoloc,
     get_stage_from_coordinates,
     update_bigquery_user_location_and_stage,
@@ -717,10 +717,12 @@ def create_stage():
 
 @app.route('/api/stages/<stage_name>/rename', methods=['PUT'])
 def rename_stage(stage_name):
-    """Renomme une scène (admin panel). `stage_name` dans l'URL est juste
-    informatif : l'opération cible réellement `stage_id` (body), la clé
-    stable — c'est elle qui permet de renommer sans casser le lien vers les
-    sets déjà créés. Body : festival_id, user_id (admin), stage_id, new_stage."""
+    """Modifie le nom et/ou l'ordre d'affichage d'une scène (admin panel).
+    `stage_name` dans l'URL est juste informatif : l'opération cible
+    réellement `stage_id` (body), la clé stable — c'est elle qui permet de
+    renommer sans casser le lien vers les sets déjà créés. Body :
+    festival_id, user_id (admin), stage_id, new_stage, stage_order (optionnel,
+    null pour l'effacer)."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Aucune donnée fournie"}), 400
@@ -734,8 +736,14 @@ def rename_stage(stage_name):
     new_stage = data.get('new_stage')
     if stage_id is None or not new_stage:
         return jsonify({"error": "Les champs stage_id et new_stage sont requis"}), 400
+    stage_order = data.get('stage_order')
     try:
-        updated = rename_bigquery_stage(festival_id, int(stage_id), new_stage)
+        stage_order = int(stage_order) if stage_order is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "stage_order doit être un entier"}), 400
+    try:
+        updated = update_bigquery_stage_details(
+            festival_id, int(stage_id), new_stage, stage_order)
         return jsonify(updated), 200
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
