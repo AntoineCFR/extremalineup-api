@@ -1001,9 +1001,12 @@ def _serialize_change(c):
     return out
 
 
-def _refresh_one_festival(festival, force, dry_run=False):
+def _refresh_one_festival(festival, force, dry_run=False, exclude_keys=None):
     """Scrape + diff (+ journal + push si pas dry_run) pour UN festival.
-    Retourne un récap. En dry_run : calcule le plan, n'écrit/ne pousse RIEN."""
+    Retourne un récap. En dry_run : calcule le plan, n'écrit/ne pousse RIEN.
+    exclude_keys (apply seulement) : `change["key"]` à détecter mais ne PAS
+    écrire/journaliser/pousser — permet à l'admin de rejeter certaines entrées
+    d'un apply partiel."""
     festival_id = festival["festival_id"]
     adapter = SCRAPERS.get(festival_id)
     if adapter is None:
@@ -1035,18 +1038,26 @@ def _refresh_one_festival(festival, force, dry_run=False):
     if bool(new_mask.any()):
         adapter.enrich_new_bios(festival, df, new_mask)
 
-    applied = sync_timetable_festival(df, festival_id, dry_run=False, force=force)
+    applied = sync_timetable_festival(df, festival_id, dry_run=False, force=force,
+                                       exclude_keys=exclude_keys)
     # Scènes surprises : on s'assure que toute scène scrapée a sa ligne `stages`
     # (additif, coords à 0 — ne touche jamais aux coordonnées déjà réglées).
     new_stages = ensure_stages_exist(festival_id, df["stage"].dropna().unique().tolist())
-    journaled = journal_lineup_changes(festival_id, applied, tz)
+    # `applied` liste TOUT ce qui a été détecté (y compris les entrées exclues,
+    # pour un rapport fidèle) — on ne journalise/pousse/compte que ce qui a
+    # RÉELLEMENT été écrit, sinon on notifierait les festivaliers d'un
+    # changement que l'admin a justement rejeté.
+    excluded = exclude_keys or set()
+    applied_only = [c for c in applied if c["key"] not in excluded]
+    journaled = journal_lineup_changes(festival_id, applied_only, tz)
     pushed = _push_pending_programmation(festival_id)
 
     counts = {}
-    for c in applied:
+    for c in applied_only:
         counts[c["type"]] = counts.get(c["type"], 0) + 1
     return {"festival_id": festival_id, "changes": counts, "new_stages": new_stages,
-            "journaled": journaled, "pushed": pushed}
+            "journaled": journaled, "pushed": pushed,
+            "excluded_count": len(applied) - len(applied_only)}
 
 
 # GET et POST : déclenchable par cron-job.org (comme /update-weather, /push/tick).
@@ -1111,11 +1122,13 @@ def timetable_preview():
     if err:
         return jsonify({"error": err}), 400
     apply_changes = bool(data.get('apply'))
+    exclude_keys = set(data.get('exclude') or []) if apply_changes else None
     try:
         festival = get_bigquery_festival(festival_id)
         if not festival:
             return jsonify({"error": "Festival introuvable"}), 404
-        result = _refresh_one_festival(festival, force=False, dry_run=not apply_changes)
+        result = _refresh_one_festival(festival, force=False, dry_run=not apply_changes,
+                                        exclude_keys=exclude_keys)
         return jsonify(result), 200
     except MassCancellationError as e:
         return jsonify({"error": "mass_cancellation_guard", "detail": str(e)}), 409
