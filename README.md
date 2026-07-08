@@ -212,6 +212,8 @@ Apply `migrations/010_timetable_soft_delete.sql` to add `timetable.active` / `de
 
 Apply `migrations/011_stage_id.sql` to add `stages.stage_id` / `timetable.stage_id` (stable numeric id for a stage, backfilled from the existing name match). Purely additive — `stage` (name) stays the key used everywhere else. **Required before deploying** the admin panel's stages CRUD (`POST`/`DELETE /api/stages`), otherwise stage creation fails on the missing column.
 
+Apply `migrations/012_stage_order.sql` to add `stages.stage_order` (explicit display order set by the admin on the stage itself, takes priority over the order derived from `timetable.stage_order`). **Required before deploying** the stage edit endpoint (`PUT /api/stages/<name>/rename`), otherwise editing a stage's order fails on the missing column.
+
 ---
 
 ## Notes

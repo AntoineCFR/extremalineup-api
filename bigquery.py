@@ -1346,7 +1346,12 @@ _STAGE_COLS = [
 
 def _stage_row_to_dict(row):
     stage_id = getattr(row, "stage_id", None)
-    d = {"stage": str(row.stage), "stage_id": int(stage_id) if stage_id is not None else None}
+    stage_order = getattr(row, "stage_order", None)
+    d = {
+        "stage": str(row.stage),
+        "stage_id": int(stage_id) if stage_id is not None else None,
+        "stage_order": int(stage_order) if stage_order is not None else None,
+    }
     for col in _STAGE_COLS:
         value = getattr(row, col)
         d[col] = float(value) if value is not None else None
@@ -1405,21 +1410,25 @@ def get_bigquery_stage_by_id(festival_id, stage_id):
         raise
 
 
-def rename_bigquery_stage(festival_id, stage_id, new_name):
-    """Renomme une scène, identifiée par `stage_id` (pas par son nom courant —
-    c'est justement le rôle de stage_id : permettre un renommage sûr). Propage
-    le nouveau nom à tous les sets `timetable` déjà liés (par stage_id, OU par
-    l'ancien nom pour les sets créés avant que ce lien existe — et on en
-    profite pour leur assigner stage_id au passage, auto-réparateur).
+def update_bigquery_stage_details(festival_id, stage_id, new_name, stage_order):
+    """Modifie le nom et/ou l'ordre d'affichage d'une scène, ciblée par
+    `stage_id` (clé stable, pas son nom courant — c'est justement le rôle de
+    stage_id : permettre un renommage sûr). Si `new_name` diffère du nom
+    actuel, propage le nouveau nom à tous les sets `timetable` déjà liés (par
+    stage_id, OU par l'ancien nom pour les sets créés avant que ce lien
+    existe — et on en profite pour leur assigner stage_id au passage,
+    auto-réparateur). `stage_order` est toujours écrit tel quel (peut être
+    None pour l'effacer) sur `stages.stage_order` — un ordre explicite ici
+    prime sur l'ordre dérivé de `timetable.stage_order` (posé par les sets),
+    qui reste le repli pour les scènes jamais éditées via cette fonction.
     Lève ValueError si la scène est introuvable ou si le nouveau nom est déjà
     pris par une autre scène de ce festival."""
     stage = get_bigquery_stage_by_id(festival_id, stage_id)
     if stage is None:
         raise ValueError(f"Scène stage_id={stage_id} introuvable pour le festival {festival_id}")
     old_name = stage["stage"]
-    if new_name == old_name:
-        return stage
-    if get_bigquery_stage(festival_id, new_name) is not None:
+    renamed = new_name != old_name
+    if renamed and get_bigquery_stage(festival_id, new_name) is not None:
         raise ValueError(f"La scène « {new_name} » existe déjà pour ce festival")
 
     params = [
@@ -1427,22 +1436,24 @@ def rename_bigquery_stage(festival_id, stage_id, new_name):
         bigquery.ScalarQueryParameter("stage_id", "INT64", stage_id),
         bigquery.ScalarQueryParameter("old_name", "STRING", old_name),
         bigquery.ScalarQueryParameter("new_name", "STRING", new_name),
+        bigquery.ScalarQueryParameter("stage_order", "INT64", stage_order),
     ]
     client.query(
         f"""
-        UPDATE `{Config.BQ_STAGES}` SET stage = @new_name
+        UPDATE `{Config.BQ_STAGES}` SET stage = @new_name, stage_order = @stage_order
         WHERE festival_id = @festival_id AND stage_id = @stage_id
         """,
         job_config=bigquery.QueryJobConfig(query_parameters=params),
     ).result()
-    client.query(
-        f"""
-        UPDATE `{Config.BQ_TIMETABLE}` SET stage = @new_name, stage_id = @stage_id
-        WHERE festival_id = @festival_id
-          AND (stage_id = @stage_id OR (stage_id IS NULL AND stage = @old_name))
-        """,
-        job_config=bigquery.QueryJobConfig(query_parameters=params),
-    ).result()
+    if renamed:
+        client.query(
+            f"""
+            UPDATE `{Config.BQ_TIMETABLE}` SET stage = @new_name, stage_id = @stage_id
+            WHERE festival_id = @festival_id
+              AND (stage_id = @stage_id OR (stage_id IS NULL AND stage = @old_name))
+            """,
+            job_config=bigquery.QueryJobConfig(query_parameters=params),
+        ).result()
     return get_bigquery_stage_by_id(festival_id, stage_id)
 
 
