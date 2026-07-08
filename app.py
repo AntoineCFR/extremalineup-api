@@ -28,6 +28,8 @@ from bigquery import (
     get_bigquery_stage,
     get_bigquery_stages,
     update_bigquery_stage,
+    create_bigquery_stage,
+    delete_bigquery_stage,
     insert_bigquery_geoloc,
     get_stage_from_coordinates,
     update_bigquery_user_location_and_stage,
@@ -45,6 +47,11 @@ from bigquery import (
     ensure_stages_exist,
     rejournal_programmation,
     MassCancellationError,
+    get_bigquery_user_role,
+    get_bigquery_set,
+    create_bigquery_set,
+    update_bigquery_set,
+    delete_bigquery_set,
 )
 from config import Config
 from scrapers import SCRAPERS
@@ -93,6 +100,26 @@ def _festival_id_from_body(data):
         return int(raw), None
     except (TypeError, ValueError):
         return None, "festival_id must be an integer"
+
+def _require_admin(data):
+    """Vérifie que `data['user_id']` correspond bien à un compte user_role='admin'
+    EN BASE (jamais un flag envoyé par le client). Retourne (True, None) ou
+    (False, (response, status)) à `return` tel quel par l'appelant.
+    Sécurité limitée : comme le reste de cette API, l'identité repose sur le
+    user_id fourni par le client (pas de token de session) — ça bloque un appel
+    qui prétendrait être admin sans l'être, mais pas quelqu'un qui connaît déjà
+    l'user_id d'un vrai admin."""
+    user_id = data.get('user_id') if data else None
+    if user_id is None:
+        return False, (jsonify({"error": "user_id is required"}), 400)
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return False, (jsonify({"error": "user_id must be an integer"}), 400)
+    if get_bigquery_user_role(user_id) != 'admin':
+        return False, (jsonify({"error": "admin role required"}), 403)
+    return True, None
+
 
 def _nan_to_none(records):
     """Remplace les float NaN par None dans une liste de dicts → JSON `null` valide.
@@ -160,6 +187,119 @@ def get_timetable():
         return jsonify(records)
     except Exception as e:
         logger.error(f"Erreur dans /timetable: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+_SET_REQUIRED_FIELDS = ['dj', 'stage', 'day', 'day_int', 'start_time', 'end_time']
+
+
+@app.route('/timetable', methods=['POST'])
+def create_set():
+    """Crée un set manuellement (admin panel). Body : festival_id, user_id
+    (admin), dj, stage, host (optionnel), day, day_int, stage_order (optionnel),
+    bio (optionnel), start_time, end_time (ISO 8601)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    missing = [f for f in _SET_REQUIRED_FIELDS if data.get(f) in (None, '')]
+    if missing:
+        return jsonify({"error": f"Champs requis manquants : {', '.join(missing)}"}), 400
+    try:
+        created = create_bigquery_set(festival_id, data)
+        change = {
+            "type": "added", "set_id": created["set_id"], "dj": created["dj"],
+            "stage": created["stage"], "day": created["day"],
+            "new_start": datetime.fromisoformat(created["start_time"]),
+            "new_end": datetime.fromisoformat(created["end_time"]),
+        }
+        try:
+            _notify_set_change(festival_id, change)
+        except Exception as e:
+            logger.error(f"Notification échouée pour le set {created['set_id']}: {e}")
+        return jsonify(created), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Erreur dans POST /timetable: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/timetable/<int:set_id>', methods=['PUT'])
+def update_set(set_id):
+    """Modifie un set existant (admin panel). Body : festival_id, user_id (admin),
+    + champs à modifier (dj/stage/host/day/day_int/stage_order/start_time/end_time —
+    absents = valeur existante conservée)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        existing = get_bigquery_set(festival_id, set_id)
+        updated = update_bigquery_set(festival_id, set_id, data)
+        if existing and (existing["start_time"] != updated["start_time"]
+                         or existing["end_time"] != updated["end_time"]):
+            change = {
+                "type": "rescheduled", "set_id": set_id, "dj": updated["dj"],
+                "stage": updated["stage"], "day": updated["day"],
+                "old_start": datetime.fromisoformat(existing["start_time"]),
+                "new_start": datetime.fromisoformat(updated["start_time"]),
+                "old_end": datetime.fromisoformat(existing["end_time"]),
+                "new_end": datetime.fromisoformat(updated["end_time"]),
+            }
+            try:
+                _notify_set_change(festival_id, change)
+            except Exception as e:
+                logger.error(f"Notification échouée pour le set {set_id}: {e}")
+        return jsonify(updated), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Erreur dans PUT /timetable/{set_id}: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/timetable/<int:set_id>', methods=['DELETE'])
+def delete_set(set_id):
+    """Supprime (soft-delete, active=FALSE) un set (admin panel).
+    Body : festival_id, user_id (admin)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        existing = get_bigquery_set(festival_id, set_id)
+        delete_bigquery_set(festival_id, set_id)
+        if existing:
+            change = {
+                "type": "cancelled", "set_id": set_id, "dj": existing["dj"],
+                "stage": existing["stage"], "day": existing["day"],
+                "old_start": datetime.fromisoformat(existing["start_time"]),
+            }
+            try:
+                _notify_set_change(festival_id, change)
+            except Exception as e:
+                logger.error(f"Notification échouée pour le set {set_id}: {e}")
+        return jsonify({"success": True}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Erreur dans DELETE /timetable/{set_id}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -520,10 +660,14 @@ def get_stage(stage_name):
 
 @app.route('/api/stages/<stage_name>', methods=['PUT'])
 def update_stage(stage_name):
-    """Met à jour les coordonnées d'une scène. festival_id attendu dans le body."""
+    """Met à jour les coordonnées d'une scène. festival_id et user_id (admin)
+    attendus dans le body."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
     festival_id, err = _festival_id_from_body(data)
     if err:
         return jsonify({"error": err}), 400
@@ -541,6 +685,55 @@ def update_stage(stage_name):
         return jsonify({"status": "success", "message": "Scène mise à jour."}), 200
     except Exception as e:
         logger.error(f"Erreur dans /api/stages/{stage_name}: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/stages', methods=['POST'])
+def create_stage():
+    """Crée une scène manuellement (admin panel). Body : festival_id, user_id
+    (admin), stage (nom)."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    stage_name = data.get('stage')
+    if not stage_name:
+        return jsonify({"error": "Le champ stage est requis"}), 400
+    try:
+        created = create_bigquery_stage(festival_id, stage_name)
+        return jsonify(created), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Erreur dans POST /api/stages: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/stages/<stage_name>', methods=['DELETE'])
+def delete_stage(stage_name):
+    """Supprime une scène (admin panel). Body : festival_id, user_id (admin).
+    Refuse si des sets actifs référencent encore cette scène."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        delete_bigquery_stage(festival_id, stage_name)
+        return jsonify({"success": True}), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Erreur dans DELETE /api/stages/{stage_name}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -786,6 +979,28 @@ def _push_pending_programmation(festival_id):
     return sent
 
 
+def _notify_set_change(festival_id, change):
+    """Journalise + pousse IMMÉDIATEMENT un changement de set créé/modifié/
+    supprimé à la main (admin panel) — même pipeline que les changements
+    détectés par le scraper (journal_lineup_changes + _push_pending_programmation),
+    pour que les festivaliers soient notifiés même hors scrape automatique."""
+    festival = get_bigquery_festival(festival_id)
+    tz = ZoneInfo(festival["timezone"]) if festival and festival.get("timezone") else ZoneInfo("UTC")
+    journal_lineup_changes(festival_id, [change], tz)
+    _push_pending_programmation(festival_id)
+
+
+def _serialize_change(c):
+    """Copie d'un dict de changement (cf. `_change()` en bigquery.py) avec les
+    datetimes converties en ISO 8601 — cohérent avec le reste de l'API
+    (get_bigquery_set etc. utilisent aussi .isoformat())."""
+    out = dict(c)
+    for k in ("old_start", "new_start", "old_end", "new_end"):
+        if isinstance(out.get(k), datetime):
+            out[k] = out[k].isoformat()
+    return out
+
+
 def _refresh_one_festival(festival, force, dry_run=False):
     """Scrape + diff (+ journal + push si pas dry_run) pour UN festival.
     Retourne un récap. En dry_run : calcule le plan, n'écrit/ne pousse RIEN."""
@@ -812,7 +1027,8 @@ def _refresh_one_festival(festival, force, dry_run=False):
         counts = {}
         for c in plan:
             counts[c["type"]] = counts.get(c["type"], 0) + 1
-        return {"festival_id": festival_id, "dry_run": True, "changes": counts}
+        return {"festival_id": festival_id, "dry_run": True, "changes": counts,
+                "detail": [_serialize_change(c) for c in plan]}
 
     # Bios : uniquement pour les NOUVEAUX sets (jamais les artistes existants).
     new_mask = select_new_sets(df, festival_id)
@@ -871,6 +1087,40 @@ def refresh_lineup():
         return jsonify({"error": "festival_id must be an integer"}), 400
     except Exception as e:
         logger.error(f"Erreur /api/admin/refresh-lineup: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Aperçu (dry_run, défaut) OU application (apply=true) des changements de
+# line-up détectés par le scraper pour UN festival — consommé par l'écran
+# admin de l'app mobile. Auth par RÔLE (_require_admin), pas par le secret
+# cron (_admin_authorized) : ce dernier est destiné à cron-job.org et ne doit
+# jamais être embarqué dans l'app mobile (APK/IPA décompilable = secret
+# public). apply=true réutilise EXACTEMENT le chemin du scraper automatique
+# (mêmes garde-fous anti-désactivation massive, mêmes champs écrits en
+# entier) plutôt qu'un rejeu partiel via le CRUD manuel des sets, qui n'a pas
+# tous les champs (day_int, bio…) et n'a pas le garde-fou.
+@app.route('/api/admin/timetable-preview', methods=['POST'])
+def timetable_preview():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    apply_changes = bool(data.get('apply'))
+    try:
+        festival = get_bigquery_festival(festival_id)
+        if not festival:
+            return jsonify({"error": "Festival introuvable"}), 404
+        result = _refresh_one_festival(festival, force=False, dry_run=not apply_changes)
+        return jsonify(result), 200
+    except MassCancellationError as e:
+        return jsonify({"error": "mass_cancellation_guard", "detail": str(e)}), 409
+    except Exception as e:
+        logger.error(f"Erreur dans /api/admin/timetable-preview: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

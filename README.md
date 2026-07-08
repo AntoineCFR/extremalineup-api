@@ -210,6 +210,8 @@ Apply `migrations/009_user_tent.sql` to add `festival_users.tent_lat` / `tent_ln
 
 Apply `migrations/010_timetable_soft_delete.sql` to add `timetable.active` / `deactivated_at`. This switches the scraper from "delete + reassign every set_id" (which orphaned favorites/tags/ratings) to a diff-based sync that keeps `set_id` stable: a set keeps its id when only its time changes, and a removed set is **deactivated** (kept for history, hidden from the app) rather than erased. **Required before deploying** — `/timetable` now filters on `active`, so the column must exist first.
 
+Apply `migrations/011_stage_id.sql` to add `stages.stage_id` / `timetable.stage_id` (stable numeric id for a stage, backfilled from the existing name match). Purely additive — `stage` (name) stays the key used everywhere else. **Required before deploying** the admin panel's stages CRUD (`POST`/`DELETE /api/stages`), otherwise stage creation fails on the missing column.
+
 ---
 
 ## Notes
