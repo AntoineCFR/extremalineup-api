@@ -30,6 +30,7 @@ from bigquery import (
     update_bigquery_stage,
     create_bigquery_stage,
     delete_bigquery_stage,
+    rename_bigquery_stage,
     insert_bigquery_geoloc,
     get_stage_from_coordinates,
     update_bigquery_user_location_and_stage,
@@ -711,6 +712,35 @@ def create_stage():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error(f"Erreur dans POST /api/stages: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/stages/<stage_name>/rename', methods=['PUT'])
+def rename_stage(stage_name):
+    """Renomme une scène (admin panel). `stage_name` dans l'URL est juste
+    informatif : l'opération cible réellement `stage_id` (body), la clé
+    stable — c'est elle qui permet de renommer sans casser le lien vers les
+    sets déjà créés. Body : festival_id, user_id (admin), stage_id, new_stage."""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Aucune donnée fournie"}), 400
+    ok, err_response = _require_admin(data)
+    if not ok:
+        return err_response
+    festival_id, err = _festival_id_from_body(data)
+    if err:
+        return jsonify({"error": err}), 400
+    stage_id = data.get('stage_id')
+    new_stage = data.get('new_stage')
+    if stage_id is None or not new_stage:
+        return jsonify({"error": "Les champs stage_id et new_stage sont requis"}), 400
+    try:
+        updated = rename_bigquery_stage(festival_id, int(stage_id), new_stage)
+        return jsonify(updated), 200
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Erreur dans PUT /api/stages/{stage_name}/rename: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
