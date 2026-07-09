@@ -147,8 +147,27 @@ def _normalize_artist(dj) -> str:
     return " & ".join(sorted(parts)) if parts else str(dj).strip().casefold()
 
 
-def _nk(dj, stage, day) -> tuple:
-    return (_normalize_artist(dj), str(stage).strip().casefold(), str(day).strip().casefold())
+def _normalize_stage_identity(stage, host) -> str:
+    """Forme canonique comparant un `stage` scrapé (le site source fusionne
+    souvent scène + collectif dans un seul libellé, ex. "Area S - Ubuntu") à la
+    paire (stage, host) telle que découpée côté app (stage="Area S",
+    host="Ubuntu"). Le scraper ne connaît pas la notion de host séparé (host
+    toujours '' côté scrape) : sans cette normalisation, la clé naturelle du
+    diff ne matchait jamais un set dont le host a été séparé manuellement dans
+    l'admin panel -> cancel(ancien stage) + added(nouveau) à tort, avec perte
+    de continuité de set_id (favoris/tags orphelins)."""
+    stage = str(stage or "").strip()
+    host = str(host or "").strip()
+    combined = f"{stage} - {host}" if host else stage
+    return combined.casefold()
+
+
+def _nk(dj, stage, host, day) -> tuple:
+    return (
+        _normalize_artist(dj),
+        _normalize_stage_identity(stage, host),
+        str(day).strip().casefold(),
+    )
 
 
 def _to_naive_utc(ts):
@@ -218,8 +237,13 @@ def select_new_sets(df, festival_id):
     """Masque booléen des lignes de `df` ABSENTES de la base (sets jamais vus,
     actifs ou inactifs) — pour n'enrichir bio/photo QUE les nouveaux. Un set
     rétabli n'est PAS « nouveau » (sa bio d'origine est conservée)."""
-    known = {_nk(r["dj"], r["stage"], r["day"]) for r in _load_existing_sets(festival_id)}
-    return df.apply(lambda r: _nk(r["dj"], r["stage"], r["day"]) not in known, axis=1)
+    known = {
+        _nk(r["dj"], r["stage"], r["host"], r["day"])
+        for r in _load_existing_sets(festival_id)
+    }
+    return df.apply(
+        lambda r: _nk(r["dj"], r["stage"], r.get("host"), r["day"]) not in known, axis=1
+    )
 
 
 def sync_timetable_festival(df, festival_id, dry_run=False, force=False, exclude_keys=None):
@@ -245,7 +269,7 @@ def sync_timetable_festival(df, festival_id, dry_run=False, force=False, exclude
         existing = _load_existing_sets(festival_id)
         by_nk = defaultdict(list)
         for r in existing:
-            by_nk[_nk(r["dj"], r["stage"], r["day"])].append(r)
+            by_nk[_nk(r["dj"], r["stage"], r["host"], r["day"])].append(r)
         for lst in by_nk.values():
             lst.sort(key=lambda r: r["start_time"] or datetime.datetime.min)
 
@@ -256,7 +280,7 @@ def sync_timetable_festival(df, festival_id, dry_run=False, force=False, exclude
         next_id = get_max_set_id() + 1
 
         for _, row in df.iterrows():
-            nk = _nk(row["dj"], row["stage"], row["day"])
+            nk = _nk(row["dj"], row["stage"], row.get("host"), row["day"])
             candidates = [r for r in by_nk.get(nk, []) if r["set_id"] not in matched]
             if candidates:
                 match = min(
@@ -269,18 +293,34 @@ def sync_timetable_festival(df, festival_id, dry_run=False, force=False, exclude
                     match["start_time"] != row["start_time"]
                     or match["end_time"] != row["end_time"]
                 )
+                # Le scraper ne connaît pas le concept de host séparé (host
+                # toujours '' côté scrape). Si le stage scrapé correspond, une
+                # fois combiné, au découpage stage/host déjà en base, on GARDE
+                # ce découpage tel quel (sinon on écraserait le host posé à la
+                # main dans l'admin panel, et on re-fusionnerait "Area S" +
+                # "Ubuntu" -> "Area S - Ubuntu" à chaque sync). On ne prend le
+                # stage scrapé "tel quel" (host remis à vide) que si la scène a
+                # VRAIMENT changé.
+                if _normalize_stage_identity(row["stage"], row.get("host")) == \
+                        _normalize_stage_identity(match["stage"], match["host"]):
+                    row["stage"] = match["stage"]
+                    row["host"] = match["host"]
+                else:
+                    row["host"] = _opt_str(row.get("host")) or ""
                 # Champ -> (ancienne valeur, nouvelle valeur), seulement les champs qui
                 # diffèrent réellement — sert à afficher précisément quoi a changé pour
-                # un type "updated" (host/stage_order/orthographe dj-stage-day : le
-                # matching par clé naturelle est insensible à la casse/espaces, donc une
-                # correction d'orthographe tombe ici plutôt qu'en "added"+"cancelled").
+                # un type "updated" (host/orthographe dj-stage-day : le matching par clé
+                # naturelle est insensible à la casse/espaces, donc une correction
+                # d'orthographe tombe ici plutôt qu'en "added"+"cancelled").
+                # `stage_order` est volontairement EXCLU de cette comparaison : c'est un
+                # ordre d'affichage dérivé de la position sur la page scrapée (dérive à
+                # chaque scrape sans changement réel de line-up) ou posé par l'admin —
+                # jamais une divergence qui justifie un "updated" (cf. _update_set, qui
+                # ne le réécrit plus non plus).
                 attr_diffs = {}
                 old_host, new_host = _opt_str(match["host"]) or "", _opt_str(row.get("host")) or ""
                 if old_host != new_host:
                     attr_diffs["host"] = {"old": old_host, "new": new_host}
-                old_order, new_order = match["stage_order"], _opt_int(row.get("stage_order"))
-                if old_order != new_order:
-                    attr_diffs["stage_order"] = {"old": old_order, "new": new_order}
                 if str(match["dj"]) != str(row["dj"]):
                     attr_diffs["dj"] = {"old": str(match["dj"]), "new": str(row["dj"])}
                 if str(match["stage"]) != str(row["stage"]):
@@ -384,13 +424,18 @@ def _insert_new_sets(insert_rows, festival_id):
 
 
 def _update_set(set_id, row, festival_id, reactivate):
-    """UPDATE des attributs (HORS bio) d'un set existant — set_id préservé. La bio
-    n'est jamais réécrite (posée à la création)."""
+    """UPDATE des attributs (HORS bio, HORS stage_order) d'un set existant —
+    set_id préservé. `stage_order` n'est JAMAIS réécrit ici : c'est une valeur
+    d'ordre d'affichage (dérivée de la position sur la page scrapée à la
+    création, ou posée à la main via l'admin panel / `stages.stage_order`
+    explicite côté app) — la laisser dériver du scrape à chaque sync ferait
+    dériver artificiellement l'ordre des scènes sans changement réel de
+    line-up, et écraserait un ordre posé à la main. La bio n'est jamais
+    réécrite non plus (posée à la création)."""
     extra = ", active = TRUE, deactivated_at = NULL" if reactivate else ""
     query = f"""
         UPDATE `{Config.BQ_TIMETABLE}`
         SET dj = @dj, stage = @stage, host = @host, day = @day, day_int = @day_int,
-            stage_order = @stage_order,
             start_time = @start_time, end_time = @end_time{extra}
         WHERE festival_id = @festival_id AND set_id = @set_id
     """
@@ -400,7 +445,6 @@ def _update_set(set_id, row, festival_id, reactivate):
         bigquery.ScalarQueryParameter("host", "STRING", _opt_str(row.get("host")) or ""),
         bigquery.ScalarQueryParameter("day", "STRING", str(row["day"])),
         bigquery.ScalarQueryParameter("day_int", "INT64", int(row["day_int"])),
-        bigquery.ScalarQueryParameter("stage_order", "INT64", _opt_int(row.get("stage_order"))),
         bigquery.ScalarQueryParameter("start_time", "TIMESTAMP", row["start_time"]),
         bigquery.ScalarQueryParameter("end_time", "TIMESTAMP", row["end_time"]),
         bigquery.ScalarQueryParameter("festival_id", "INT64", festival_id),
@@ -560,6 +604,10 @@ def _lineup_change_message(c, tz):
     if c["type"] == "rescheduled":
         return ("Nouvel horaire 🕒",
                 f"Le set de {dj} aura maintenant lieu {day} de {start} à {end} sur {stage}.")
+    if c["type"] == "updated" and "stage" in c.get("attr_diffs", {}):
+        old_stage = c["attr_diffs"]["stage"]["old"]
+        return ("Changement de scène 🔀",
+                f"{dj} ne joue plus sur {old_stage} mais sur {stage}, {day}.")
     return None
 
 

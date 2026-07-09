@@ -129,7 +129,9 @@ def get_awakenings_timetable(bios: dict | None = None) -> list[dict]:
 
             bio = _bio_for_artists(artists, bios) if bios else ''
 
-            base = day_date + timedelta(days=1) if start_t.hour < 12 else day_date
+            # Seuil afterparty : avant 9h -> nuit précédente (même night header,
+            # date calendaire réelle = lendemain) ; 9h pile ou après -> jour même.
+            base = day_date + timedelta(days=1) if start_t.hour < 9 else day_date
             start_local = datetime.combine(base, start_t)
             end_local = datetime.combine(base, end_t)
             if end_local <= start_local:
