@@ -1208,6 +1208,7 @@ def get_bigquery_users(festival_id):
             fu.last_lat,
             fu.last_lng,
             fu.last_location,
+            fu.last_seen_at,
             fu.tent_lat,
             fu.tent_lng,
             u.user_role
@@ -1230,6 +1231,7 @@ def get_bigquery_users(festival_id):
                 "last_lat": float(row["last_lat"]) if not pd.isna(row["last_lat"]) else None,
                 "last_lng": float(row["last_lng"]) if not pd.isna(row["last_lng"]) else None,
                 "last_location": str(row["last_location"]) if not pd.isna(row["last_location"]) else None,
+                "last_seen_at": row["last_seen_at"].isoformat() if not pd.isna(row["last_seen_at"]) else None,
                 "tent_lat": float(row["tent_lat"]) if not pd.isna(row["tent_lat"]) else None,
                 "tent_lng": float(row["tent_lng"]) if not pd.isna(row["tent_lng"]) else None,
                 "user_role": str(row["user_role"]) if not pd.isna(row["user_role"]) else "user",
@@ -1247,10 +1249,11 @@ def upsert_bigquery_festival_user(festival_id, user_id, lat, lng, stage):
         USING (SELECT @festival_id AS festival_id, @user_id AS user_id) AS source
         ON target.festival_id = source.festival_id AND target.user_id = source.user_id
         WHEN MATCHED THEN
-            UPDATE SET last_lat = @lat, last_lng = @lng, last_location = @stage
+            UPDATE SET last_lat = @lat, last_lng = @lng, last_location = @stage,
+                       last_seen_at = CURRENT_TIMESTAMP()
         WHEN NOT MATCHED THEN
-            INSERT (festival_id, user_id, last_lat, last_lng, last_location)
-            VALUES (@festival_id, @user_id, @lat, @lng, @stage)
+            INSERT (festival_id, user_id, last_lat, last_lng, last_location, last_seen_at)
+            VALUES (@festival_id, @user_id, @lat, @lng, @stage, CURRENT_TIMESTAMP())
         """
         job_config = bigquery.QueryJobConfig(
             query_parameters=[
@@ -1390,6 +1393,7 @@ _STAGE_COLS = [
     "lat_avg", "lon_avg", "lat_avd", "lon_avd",
     "lat_arg", "lon_arg", "lat_ard", "lon_ard",
     "lat_rally_point", "lon_rally_point",
+    "map_anchor_x", "map_anchor_y", "map_exclusion_radius",
 ]
 
 def _stage_row_to_dict(row):
