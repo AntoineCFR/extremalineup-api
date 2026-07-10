@@ -1512,14 +1512,16 @@ def update_bigquery_stage_details(festival_id, stage_id, new_name, stage_order):
 def update_bigquery_stage(festival_id, stage_data):
     """Met à jour les coordonnées d'une scène."""
     try:
+        # Clause SET générée depuis _STAGE_COLS (plutôt que codée en dur) pour
+        # qu'un ajout de colonne à _STAGE_COLS ne puisse plus se retrouver
+        # silencieusement absent de la requête réelle : les paramètres passés
+        # à BigQuery sans être référencés dans le texte SQL sont ignorés sans
+        # erreur — c'est exactement ce qui a fait que map_anchor_x/y et
+        # map_exclusion_radius n'étaient jamais écrits malgré un statut 200.
+        set_clause = ", ".join(f"{col} = @{col}" for col in _STAGE_COLS)
         query = f"""
         UPDATE `{Config.BQ_STAGES}`
-        SET
-            lat_avg = @lat_avg, lon_avg = @lon_avg,
-            lat_avd = @lat_avd, lon_avd = @lon_avd,
-            lat_arg = @lat_arg, lon_arg = @lon_arg,
-            lat_ard = @lat_ard, lon_ard = @lon_ard,
-            lat_rally_point = @lat_rally_point, lon_rally_point = @lon_rally_point
+        SET {set_clause}
         WHERE festival_id = @festival_id AND stage = @stage
         """
         params = [
