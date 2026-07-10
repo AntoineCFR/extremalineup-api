@@ -43,7 +43,7 @@ Flutter app  ──HTTPS/JSON──►  Flask API  ──►  BigQuery (source o
 |---|---|---|
 | `festivals` | — | Metadata: `festival_id`, `slug`, `name`, `city`, `country`, `start_date`, `end_date`, `timezone`, `is_active`. Replaces the constants previously hard-coded in `config.py`. |
 | `users` | **global** | One account per person, reused across festivals (`id`, `username`, `phone_number`, `user_role`). |
-| `festival_users` | per-festival | Live presence: `(festival_id, user_id, last_lat, last_lng, last_location)`. |
+| `festival_users` | per-festival | Live presence: `(festival_id, user_id, last_lat, last_lng, last_location, last_seen_at)`. `last_seen_at` is bumped only on a real GPS fix (`upsert_bigquery_festival_user`), not by a stage re-resolve with no new coordinates. |
 | `timetable`, `user_favorites`, `stages`, `geoloc`, `events`, `weather` | per-festival | All carry a `festival_id` column. |
 
 Every data endpoint **requires** a `festival_id` (query param on `GET`, body field on `POST`/`PUT`/`DELETE`) and returns a `400` if it is missing.
@@ -62,7 +62,7 @@ Every data endpoint **requires** a `festival_id` (query param on `GET`, body fie
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/timetable?festival_id=` | Full line-up, ordered by day/stage/time (times shifted to the festival's local TZ) |
-| `GET` | `/users?festival_id=` | Users present on a festival (id, username, phone, last location & stage, tent location, role) |
+| `GET` | `/users?festival_id=` | Users present on a festival (id, username, phone, last location & stage, last-seen timestamp, tent location, role) |
 | `GET` | `/users/check?username=` | Resolve a username to its user id (global, no `festival_id`) |
 | `POST` | `/users/<id>/phone` | Update a user's phone number (global) |
 | `POST` | `/users/<id>/location` | Update a user's coordinates on a festival (`festival_id` in body) |
@@ -87,9 +87,9 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 ### Stages & geolocation
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/stages?festival_id=` | All stages with their corner/rally-point coordinates |
+| `GET` | `/api/stages?festival_id=` | All stages with their corner/rally-point coordinates and their map anchor (`map_anchor_x/y`, `map_exclusion_radius`) |
 | `GET` | `/api/stages/<name>?festival_id=` | A single stage |
-| `PUT` | `/api/stages/<name>` | Update a stage's geo-box (`festival_id` in body) |
+| `PUT` | `/api/stages/<name>` | Update a stage's geo-box and/or map anchor (`festival_id` in body) |
 | `POST` | `/api/geoloc` | Store a user's GPS fix, resolve its stage, update presence (`festival_id` in body); response returns `stage` |
 
 ### Events (SOS / lost / hype)
@@ -126,6 +126,8 @@ Collaborative, free-text tags on a set (keyed by `set_id`, like favorites/rating
 - **Idempotent favorites via `MERGE`.** Toggle and rating writes use BigQuery `MERGE` (UPSERT): the first interaction inserts the `(festival_id, user_id, set_id)` row, later ones update it.
 
 - **Stage resolution.** `/api/geoloc` stores the raw fix in the `geoloc` table, then checks the point against each stage's bounding box (computed from its four corner coordinates) and upserts the user's presence in `festival_users` (`last_location` = stage name).
+
+- **Stage map anchor (single source of column list).** A stage also carries `map_anchor_x`/`map_anchor_y` (fractional 0-1 position on the mobile app's illustrated map) and `map_exclusion_radius` (zone kept free of avatar markers), calibrated by an admin from the app. These live alongside the geo-box columns in the same `_STAGE_COLS` list that drives `get_bigquery_stages`, `create_bigquery_stage` and `update_bigquery_stage` — the `UPDATE`'s `SET` clause is generated from that list rather than hard-coded, after a bug where a hard-coded clause silently ignored newly-added columns (200 OK, nothing written).
 
 - **Event fan-out.** Creating an event writes to BigQuery and then triggers side effects by type:
   `sos` → high-priority push · `hype` → normal push · `lost` → re-resolve **every** user's stage on that festival (so the group can regroup) **then** push.
@@ -167,7 +169,10 @@ extremalineup-api/
 │   ├── 007_push_journal.sql    # users.gender + notifications (journal + push dedup)
 │   ├── 008_journal_realtime_events.sql  # notifications.variant (real-time events journal + hype dedup)
 │   ├── 009_user_tent.sql       # festival_users.tent_lat/tent_lng (per-festival camp location)
-│   └── 010_timetable_soft_delete.sql  # timetable.active/deactivated_at (stable set_id on re-scrape)
+│   ├── 010_timetable_soft_delete.sql  # timetable.active/deactivated_at (stable set_id on re-scrape)
+│   ├── 011_stage_id.sql        # stages.stage_id / timetable.stage_id (stable stage identity)
+│   ├── 012_stage_order.sql     # stages.stage_order (explicit admin display order)
+│   └── 013_stage_map_anchor.sql  # stages.map_anchor_x/y + map_exclusion_radius, festival_users.last_seen_at
 └── requirements.txt
 ```
 
@@ -213,6 +218,8 @@ Apply `migrations/010_timetable_soft_delete.sql` to add `timetable.active` / `de
 Apply `migrations/011_stage_id.sql` to add `stages.stage_id` / `timetable.stage_id` (stable numeric id for a stage, backfilled from the existing name match). Purely additive — `stage` (name) stays the key used everywhere else. **Required before deploying** the admin panel's stages CRUD (`POST`/`DELETE /api/stages`), otherwise stage creation fails on the missing column.
 
 Apply `migrations/012_stage_order.sql` to add `stages.stage_order` (explicit display order set by the admin on the stage itself, takes priority over the order derived from `timetable.stage_order`). **Required before deploying** the stage edit endpoint (`PUT /api/stages/<name>/rename`), otherwise editing a stage's order fails on the missing column.
+
+Apply `migrations/013_stage_map_anchor.sql` to add `stages.map_anchor_x` / `map_anchor_y` / `map_exclusion_radius` (a stage's calibrated position on the mobile app's illustrated map, and the radius kept free of avatar markers) and `festival_users.last_seen_at` (timestamp of a user's last GPS fix, shown as "seen N minutes ago" in the app's Map tab). **Required before deploying** the Map tab's calibration screen and the updated `PUT /api/stages/<name>` — without it, `update_bigquery_stage`'s generated `SET` clause references columns that don't exist yet.
 
 ---
 
